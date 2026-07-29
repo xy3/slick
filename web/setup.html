@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>slick · setup</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <div class="brand"><b>slick</b> · connect your Slack</div>
+
+    <form class="card setup" method="post" action="/setup">
+      {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
+
+      <label for="token">Token <span style="opacity:.6">(starts with xoxc-)</span></label>
+      <div class="field"><textarea id="token" name="token" spellcheck="false"
+           placeholder="xoxc-…" required></textarea></div>
+
+      <label for="cookie">d cookie <span style="opacity:.6">(starts with xoxd-)</span></label>
+      <div class="field"><textarea id="cookie" name="cookie" spellcheck="false"
+           placeholder="xoxd-…" required></textarea></div>
+
+      <div class="actions"><button class="send" type="submit">Connect</button></div>
+
+      <div class="help">
+        In your Slack browser tab, open DevTools (<code>F12</code>):
+        <ol>
+          <li><b>Token</b> — Console, run:
+            <code>JSON.parse(localStorage.localConfig_v2).teams</code>,
+            expand your workspace, copy its <code>token</code> value.</li>
+          <li><b>d cookie</b> — Application ▸ Cookies ▸ <code>https://app.slack.com</code>,
+            copy the value of the <code>d</code> row.</li>
+        </ol>
+        Stored locally at <code>~/.config/slick/config.json</code> (user-only) — nothing leaves your machine except calls to Slack.
+      </div>
+    </form>
+  </div>
+</body>
+</html>

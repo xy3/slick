@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>slick</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <div class="brand"><b>slick</b> · {{.Who}}</div>
+
+    <div class="card">
+      <div class="picker">
+        <div class="selected" id="selected">
+          <span class="chip"><span id="chipName"></span><button id="clear" title="change">×</button></span>
+        </div>
+        <div class="field" id="searchField">
+          <input type="text" id="search" autocomplete="off" spellcheck="false"
+                 placeholder="Search a channel or person…" aria-label="recipient">
+        </div>
+        <ul class="results" id="results" role="listbox"></ul>
+      </div>
+
+      <div class="compose" id="compose">
+        <div class="field">
+          <textarea id="message" placeholder="Write a message…" aria-label="message"></textarea>
+        </div>
+        <div class="row">
+          <span class="hint"><kbd>⌘/Ctrl</kbd> + <kbd>Enter</kbd> to send · <kbd>Esc</kbd> to change recipient</span>
+          <button class="send" id="send" disabled>Send</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

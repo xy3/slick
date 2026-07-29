@@ -132,6 +132,31 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 }
 .results li[aria-selected="true"] { background: var(--panel-2); }
 
+/* Thread (recent history) */
+.thread {
+  display: none;
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 6px 6px 2px;
+  max-height: 42vh;
+  overflow-y: auto;
+}
+.thread.show { display: block; }
+.thread li { padding: 7px 8px; border-radius: 10px; }
+.thread .who {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 1px;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+.thread .who .at { color: var(--muted); font-weight: 400; font-size: 11px; }
+.thread .body { white-space: pre-wrap; word-break: break-word; }
+.thread li.mine .who { color: var(--text); }
+.thread .empty { color: var(--muted); text-align: center; padding: 18px; font-size: 13px; }
+
 /* Message box */
 .compose { margin-top: 10px; display: none; }
 .compose textarea { min-height: 120px; }

@@ -28,6 +28,7 @@ Nothing leaves your machine except calls to Slack. If Slack rotates the token
 ## Use
 
 - Type to fuzzy-search a channel or person; `↑`/`↓` to move, `Enter` to pick.
+- The last ~25 messages appear and refresh every few seconds while open.
 - Write your message; `⌘/Ctrl+Enter` to send, `Esc` to change recipient.
 
 ### A near-global shortcut
@@ -43,9 +44,12 @@ window and bind an OS hotkey to it:
 
 - `main.go` — local HTTP server, paste-once auth, conversation cache.
 - `slack/client.go` — `xoxc`+cookie Web API client (`auth.test`,
-  `conversations.list`, `users.list`, `chat.postMessage`).
+  `conversations.list`, `users.list`, `conversations.history`,
+  `chat.postMessage`).
 - `web/` — embedded UI (`index.html`, `setup.html`, `style.css`, `app.js`).
 
 ## Not yet
 
-Reading messages / threads and realtime updates — this MVP is compose-only.
+- **True realtime.** History currently refreshes by polling every 4s; a
+  WebSocket (the browser client's flannel/RTM socket) would be instant.
+- **Threads**, message editing, reactions, and multi-workspace.

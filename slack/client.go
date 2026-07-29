@@ -5,10 +5,14 @@ package slack
 import (
 	"encoding/json"
 	"fmt"
+	"html"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -19,6 +23,9 @@ type Client struct {
 	token  string // xoxc-...
 	cookie string // the `d` cookie value, xoxd-...
 	http   *http.Client
+
+	usersMu    sync.RWMutex
+	usersCache map[string]user // id -> user, loaded lazily
 }
 
 func New(token, cookie string) *Client {
@@ -137,7 +144,7 @@ func (u user) label() string {
 // Conversations returns every channel, group, and DM you can post to, with
 // human-readable names, ready for the picker.
 func (c *Client) Conversations() ([]Conversation, error) {
-	users, err := c.users()
+	users, err := c.ensureUsers()
 	if err != nil {
 		return nil, err
 	}
@@ -200,7 +207,27 @@ func (c *Client) Conversations() ([]Conversation, error) {
 	return out, nil
 }
 
-func (c *Client) users() (map[string]user, error) {
+// ensureUsers loads the workspace directory once and caches it, so both the
+// picker and message rendering can resolve user IDs to names.
+func (c *Client) ensureUsers() (map[string]user, error) {
+	c.usersMu.RLock()
+	cached := c.usersCache
+	c.usersMu.RUnlock()
+	if cached != nil {
+		return cached, nil
+	}
+
+	m, err := c.fetchUsers()
+	if err != nil {
+		return nil, err
+	}
+	c.usersMu.Lock()
+	c.usersCache = m
+	c.usersMu.Unlock()
+	return m, nil
+}
+
+func (c *Client) fetchUsers() (map[string]user, error) {
 	m := map[string]user{}
 	cursor := ""
 	for {
@@ -228,6 +255,100 @@ func (c *Client) users() (map[string]user, error) {
 		}
 	}
 	return m, nil
+}
+
+// Message is one rendered line of conversation history.
+type Message struct {
+	User string `json:"user"` // author display name
+	Text string `json:"text"` // rendered to plain text
+	TS   string `json:"ts"`   // Slack timestamp ("1690000000.000100")
+	Mine bool   `json:"mine"` // authored by the current user
+}
+
+type rawMessage struct {
+	Type    string `json:"type"`
+	Subtype string `json:"subtype"`
+	User    string `json:"user"`
+	BotID   string `json:"bot_id"`
+	Text    string `json:"text"`
+	TS      string `json:"ts"`
+}
+
+// History returns up to limit recent messages, oldest first, ready to display.
+func (c *Client) History(channelID string, limit int, me string) ([]Message, error) {
+	users, err := c.ensureUsers()
+	if err != nil {
+		return nil, err
+	}
+
+	form := url.Values{}
+	form.Set("channel", channelID)
+	form.Set("limit", strconv.Itoa(limit))
+	var r struct {
+		baseResp
+		Messages []rawMessage `json:"messages"`
+	}
+	if err := c.call("conversations.history", form, &r); err != nil {
+		return nil, err
+	}
+	if err := r.err("conversations.history"); err != nil {
+		return nil, err
+	}
+
+	out := make([]Message, 0, len(r.Messages))
+	for _, m := range r.Messages {
+		if m.Type != "message" || m.Subtype == "channel_join" || m.Subtype == "channel_leave" {
+			continue
+		}
+		name := c.name(users, m.User)
+		if name == "" && m.BotID != "" {
+			name = "bot"
+		}
+		out = append(out, Message{
+			User: name,
+			Text: c.renderText(m.Text, users),
+			TS:   m.TS,
+			Mine: me != "" && m.User == me,
+		})
+	}
+	// Slack returns newest first; flip to reading order.
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, nil
+}
+
+func (c *Client) name(users map[string]user, id string) string {
+	if u, ok := users[id]; ok {
+		return u.label()
+	}
+	return ""
+}
+
+var (
+	reUserMention = regexp.MustCompile(`<@([UW][A-Z0-9]+)>`)
+	reChanMention = regexp.MustCompile(`<#[CG][A-Z0-9]+\|([^>]*)>`)
+	reLink        = regexp.MustCompile(`<(https?://[^>|]+)(?:\|([^>]+))?>`)
+)
+
+// renderText turns Slack mrkdwn control sequences into readable plain text.
+func (c *Client) renderText(s string, users map[string]user) string {
+	s = reUserMention.ReplaceAllStringFunc(s, func(m string) string {
+		id := reUserMention.FindStringSubmatch(m)[1]
+		if n := c.name(users, id); n != "" {
+			return "@" + n
+		}
+		return "@someone"
+	})
+	s = reChanMention.ReplaceAllString(s, "#$1")
+	s = reLink.ReplaceAllStringFunc(s, func(m string) string {
+		g := reLink.FindStringSubmatch(m)
+		if g[2] != "" {
+			return g[2]
+		}
+		return g[1]
+	})
+	return html.UnescapeString(s)
 }
 
 // PostMessage sends text to a channel/DM by ID.

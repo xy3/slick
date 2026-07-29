@@ -66,6 +66,7 @@ type server struct {
 	mu       sync.RWMutex
 	client   *slack.Client
 	who      string // "user @ team", for the header
+	me       string // current user ID, for "mine" styling
 	convs    []slack.Conversation
 	convTime time.Time
 }
@@ -99,6 +100,7 @@ func main() {
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/setup", s.handleSetup)
 	mux.HandleFunc("/api/conversations", s.handleConversations)
+	mux.HandleFunc("/api/history", s.handleHistory)
 	mux.HandleFunc("/api/send", s.handleSend)
 
 	log.Printf("slick → http://%s", *addr)
@@ -115,6 +117,7 @@ func (s *server) connect(c *config) error {
 	s.mu.Lock()
 	s.client = cl
 	s.who = fmt.Sprintf("%s @ %s", auth.User, auth.Team)
+	s.me = auth.UserID
 	s.convs = nil
 	s.mu.Unlock()
 	return nil
@@ -177,6 +180,27 @@ func (s *server) handleConversations(w http.ResponseWriter, r *http.Request) {
 		s.mu.Unlock()
 	}
 	writeJSON(w, cached)
+}
+
+func (s *server) handleHistory(w http.ResponseWriter, r *http.Request) {
+	s.mu.RLock()
+	client, me := s.client, s.me
+	s.mu.RUnlock()
+	if client == nil {
+		http.Error(w, "not configured", http.StatusUnauthorized)
+		return
+	}
+	channel := r.URL.Query().Get("channel")
+	if channel == "" {
+		http.Error(w, "channel required", http.StatusBadRequest)
+		return
+	}
+	msgs, err := client.History(channel, 25, me)
+	if err != nil {
+		http.Error(w, friendly(err), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, msgs)
 }
 
 func (s *server) handleSend(w http.ResponseWriter, r *http.Request) {

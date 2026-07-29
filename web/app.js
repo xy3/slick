@@ -6,6 +6,7 @@
   const results = $("results");
   const selected = $("selected");
   const chipName = $("chipName");
+  const thread = $("thread");
   const compose = $("compose");
   const message = $("message");
   const send = $("send");
@@ -75,6 +76,59 @@
     results.children[active]?.scrollIntoView({ block: "nearest" });
   }
 
+  // --- thread (recent history) -------------------------------------------
+  let pollTimer = null;
+
+  function fmtTime(ts) {
+    const d = new Date(parseFloat(ts) * 1000);
+    if (isNaN(d)) return "";
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+
+  function renderThread(msgs) {
+    thread.innerHTML = "";
+    if (!msgs || msgs.length === 0) {
+      const li = document.createElement("li");
+      li.className = "empty";
+      li.textContent = "No recent messages.";
+      thread.appendChild(li);
+      return;
+    }
+    for (const m of msgs) {
+      const li = document.createElement("li");
+      if (m.mine) li.className = "mine";
+      const who = document.createElement("div");
+      who.className = "who";
+      const name = document.createElement("span");
+      name.textContent = m.user || "unknown";
+      const at = document.createElement("span");
+      at.className = "at";
+      at.textContent = fmtTime(m.ts);
+      who.append(name, at);
+      const body = document.createElement("div");
+      body.className = "body";
+      body.textContent = m.text;
+      li.append(who, body);
+      thread.appendChild(li);
+    }
+    thread.scrollTop = thread.scrollHeight;
+  }
+
+  function loadHistory(id) {
+    fetch("/api/history?channel=" + encodeURIComponent(id))
+      .then((r) => (r.ok ? r.json() : Promise.reject(r)))
+      .then((msgs) => { if (target && target.id === id) renderThread(msgs); })
+      .catch(() => {});
+  }
+
+  function startPolling(id) {
+    stopPolling();
+    pollTimer = setInterval(() => loadHistory(id), 4000);
+  }
+  function stopPolling() {
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  }
+
   // --- selection flow -----------------------------------------------------
   function choose(c) {
     target = c;
@@ -83,13 +137,20 @@
     results.innerHTML = "";
     selected.style.display = "flex";
     compose.style.display = "block";
+    thread.classList.add("show");
+    thread.innerHTML = "";
+    loadHistory(c.id);
+    startPolling(c.id);
     message.focus();
   }
 
   function reset() {
+    stopPolling();
     target = null;
     selected.style.display = "none";
     compose.style.display = "none";
+    thread.classList.remove("show");
+    thread.innerHTML = "";
     searchField.style.display = "block";
     search.value = "";
     shown = [];
@@ -136,9 +197,11 @@
       .then((r) => (r.ok ? r.json() : r.text().then((t) => Promise.reject(t))))
       .then(() => {
         flash(`Sent to ${target.name}`);
+        const id = target.id;
         message.value = "";
         send.disabled = true;
         message.focus();
+        loadHistory(id); // reflect the message we just sent
       })
       .catch((err) => { flash(String(err).trim() || "Send failed", true); send.disabled = false; });
   }

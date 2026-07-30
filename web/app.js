@@ -6,6 +6,7 @@
   const results = $("results");
   const selected = $("selected");
   const chipName = $("chipName");
+  const notifs = $("notifs");
   const thread = $("thread");
   const compose = $("compose");
   const message = $("message");
@@ -27,6 +28,56 @@
     .catch(() => flash("Couldn't load conversations — is the token still valid?", true));
 
   search.focus();
+
+  // --- notifications ------------------------------------------------------
+  // Ambient unread/mention summary on the main page. Polled while browsing;
+  // paused during compose to keep that view distraction-free.
+  let notifTimer = null;
+
+  function renderNotifs(items) {
+    notifs.innerHTML = "";
+    if (!items || items.length === 0) return; // empty: CSS hides the panel
+    const head = document.createElement("div");
+    head.className = "notifs-head";
+    const mentions = items.reduce((n, it) => n + (it.mentions > 0 ? 1 : 0), 0);
+    head.textContent = mentions
+      ? `${mentions} mention${mentions > 1 ? "s" : ""} · ${items.length} unread`
+      : `${items.length} unread`;
+    notifs.appendChild(head);
+
+    for (const it of items) {
+      const row = document.createElement("button");
+      row.className = "notif";
+      row.type = "button";
+      const label = document.createElement("span");
+      label.className = "notif-name";
+      label.textContent = it.name;
+      const badge = document.createElement("span");
+      badge.className = it.mentions > 0 ? "badge mention" : "badge";
+      badge.textContent = it.mentions > 0 ? String(it.mentions) : "";
+      row.append(label, badge);
+      row.addEventListener("click", () => choose(it));
+      notifs.appendChild(row);
+    }
+  }
+
+  function loadNotifs() {
+    if (target) return; // composing — leave the panel be
+    fetch("/api/notifications")
+      .then((r) => (r.ok ? r.json() : Promise.reject(r)))
+      .then((items) => { if (!target) renderNotifs(items); })
+      .catch(() => { notifs.innerHTML = ""; }); // stay quiet on failure
+  }
+
+  function startNotifPolling() {
+    stopNotifPolling();
+    loadNotifs();
+    notifTimer = setInterval(loadNotifs, 15000);
+  }
+  function stopNotifPolling() {
+    if (notifTimer) { clearInterval(notifTimer); notifTimer = null; }
+  }
+  startNotifPolling();
 
   // --- fuzzy matching -----------------------------------------------------
   function score(name, q) {
@@ -86,6 +137,9 @@
   }
 
   function renderThread(msgs) {
+    // Only stick to the bottom if the reader is already there — otherwise a
+    // poll while they're scrolled up reading history shouldn't yank them down.
+    const atBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 48;
     thread.innerHTML = "";
     if (!msgs || msgs.length === 0) {
       const li = document.createElement("li");
@@ -105,13 +159,44 @@
       at.className = "at";
       at.textContent = fmtTime(m.ts);
       who.append(name, at);
-      const body = document.createElement("div");
-      body.className = "body";
-      body.textContent = m.text;
-      li.append(who, body);
+      li.append(who, renderBody(m.segs));
       thread.appendChild(li);
     }
-    thread.scrollTop = thread.scrollHeight;
+    if (atBottom) thread.scrollTop = thread.scrollHeight;
+  }
+
+  // Build a message body from server segments. Content is untrusted, so every
+  // piece goes in via textContent / node creation — never innerHTML.
+  function renderBody(segs) {
+    const body = document.createElement("div");
+    body.className = "body";
+    for (const seg of segs || []) {
+      if (seg.type === "pre") {
+        const pre = document.createElement("pre");
+        pre.className = "codeblock";
+        const code = document.createElement("code");
+        code.textContent = seg.text;
+        pre.appendChild(code);
+        body.appendChild(pre);
+      } else if (seg.type === "code") {
+        const code = document.createElement("code");
+        code.className = "code";
+        code.textContent = seg.text;
+        body.appendChild(code);
+      } else if (seg.type === "link") {
+        const a = document.createElement("a");
+        a.textContent = seg.text;
+        if (/^https?:\/\//i.test(seg.url || "")) {
+          a.href = seg.url;
+          a.target = "_blank";
+          a.rel = "noopener noreferrer";
+        }
+        body.appendChild(a);
+      } else {
+        body.appendChild(document.createTextNode(seg.text));
+      }
+    }
+    return body;
   }
 
   function loadHistory(id) {
@@ -132,6 +217,8 @@
   // --- selection flow -----------------------------------------------------
   function choose(c) {
     target = c;
+    stopNotifPolling();
+    notifs.innerHTML = "";
     chipName.textContent = c.name;
     searchField.style.display = "none";
     results.innerHTML = "";
@@ -155,6 +242,7 @@
     search.value = "";
     shown = [];
     renderResults();
+    startNotifPolling();
     search.focus();
   }
 
@@ -178,7 +266,7 @@
   message.addEventListener("input", () => { send.disabled = message.value.trim() === ""; });
 
   message.addEventListener("keydown", (e) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); doSend(); }
+    if (e.key === "Enter" && e.shiftKey) { e.preventDefault(); doSend(); }
     else if (e.key === "Escape") { e.preventDefault(); reset(); }
   });
 

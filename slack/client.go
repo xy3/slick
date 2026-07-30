@@ -257,12 +257,21 @@ func (c *Client) fetchUsers() (map[string]user, error) {
 	return m, nil
 }
 
-// Message is one rendered line of conversation history.
+// Segment is one piece of a rendered message: plain text, a link, inline code,
+// or a fenced code block. The client builds DOM nodes from these, so message
+// content never has to be trusted as HTML.
+type Segment struct {
+	Type string `json:"type"`          // text | link | code | pre
+	Text string `json:"text"`          // display text (code body for pre/code)
+	URL  string `json:"url,omitempty"` // for link segments only; always http(s)
+}
+
+// Message is one line of conversation history, rendered into safe segments.
 type Message struct {
-	User string `json:"user"` // author display name
-	Text string `json:"text"` // rendered to plain text
-	TS   string `json:"ts"`   // Slack timestamp ("1690000000.000100")
-	Mine bool   `json:"mine"` // authored by the current user
+	User string    `json:"user"` // author display name
+	Segs []Segment `json:"segs"` // rendered message body
+	TS   string    `json:"ts"`   // Slack timestamp ("1690000000.000100")
+	Mine bool      `json:"mine"` // authored by the current user
 }
 
 type rawMessage struct {
@@ -306,7 +315,7 @@ func (c *Client) History(channelID string, limit int, me string) ([]Message, err
 		}
 		out = append(out, Message{
 			User: name,
-			Text: c.renderText(m.Text, users),
+			Segs: c.renderSegments(m.Text, users),
 			TS:   m.TS,
 			Mine: me != "" && m.User == me,
 		})
@@ -329,10 +338,50 @@ var (
 	reUserMention = regexp.MustCompile(`<@([UW][A-Z0-9]+)>`)
 	reChanMention = regexp.MustCompile(`<#[CG][A-Z0-9]+\|([^>]*)>`)
 	reLink        = regexp.MustCompile(`<(https?://[^>|]+)(?:\|([^>]+))?>`)
+	reCodeBlock   = regexp.MustCompile("(?s)```(.*?)```")
+	reInlineCode  = regexp.MustCompile("`([^`]+)`")
 )
 
-// renderText turns Slack mrkdwn control sequences into readable plain text.
-func (c *Client) renderText(s string, users map[string]user) string {
+// renderSegments turns Slack mrkdwn into a flat list of display segments:
+// fenced code blocks, inline code, links, and plain text (with mentions and
+// channel references resolved to readable names).
+func (c *Client) renderSegments(s string, users map[string]user) []Segment {
+	var segs []Segment
+	last := 0
+	for _, m := range reCodeBlock.FindAllStringSubmatchIndex(s, -1) {
+		if m[0] > last {
+			segs = append(segs, c.inlineSegments(s[last:m[0]], users)...)
+		}
+		code := strings.Trim(s[m[2]:m[3]], "\n")
+		segs = append(segs, Segment{Type: "pre", Text: html.UnescapeString(code)})
+		last = m[1]
+	}
+	if last < len(s) {
+		segs = append(segs, c.inlineSegments(s[last:], users)...)
+	}
+	return segs
+}
+
+// inlineSegments splits a non-fenced span into inline-code and rich-text runs.
+func (c *Client) inlineSegments(s string, users map[string]user) []Segment {
+	var segs []Segment
+	last := 0
+	for _, m := range reInlineCode.FindAllStringSubmatchIndex(s, -1) {
+		if m[0] > last {
+			segs = append(segs, c.textAndLinks(s[last:m[0]], users)...)
+		}
+		segs = append(segs, Segment{Type: "code", Text: html.UnescapeString(s[m[2]:m[3]])})
+		last = m[1]
+	}
+	if last < len(s) {
+		segs = append(segs, c.textAndLinks(s[last:], users)...)
+	}
+	return segs
+}
+
+// textAndLinks resolves mentions/channels and pulls out <url|label> links,
+// yielding text and link segments.
+func (c *Client) textAndLinks(s string, users map[string]user) []Segment {
 	s = reUserMention.ReplaceAllStringFunc(s, func(m string) string {
 		id := reUserMention.FindStringSubmatch(m)[1]
 		if n := c.name(users, id); n != "" {
@@ -341,14 +390,84 @@ func (c *Client) renderText(s string, users map[string]user) string {
 		return "@someone"
 	})
 	s = reChanMention.ReplaceAllString(s, "#$1")
-	s = reLink.ReplaceAllStringFunc(s, func(m string) string {
-		g := reLink.FindStringSubmatch(m)
-		if g[2] != "" {
-			return g[2]
+
+	var segs []Segment
+	last := 0
+	for _, m := range reLink.FindAllStringSubmatchIndex(s, -1) {
+		if m[0] > last {
+			segs = appendText(segs, s[last:m[0]])
 		}
-		return g[1]
-	})
-	return html.UnescapeString(s)
+		link := s[m[2]:m[3]]
+		text := link
+		if m[4] >= 0 { // captured label
+			text = s[m[4]:m[5]]
+		}
+		segs = append(segs, Segment{
+			Type: "link",
+			Text: html.UnescapeString(text),
+			URL:  html.UnescapeString(link),
+		})
+		last = m[1]
+	}
+	if last < len(s) {
+		segs = appendText(segs, s[last:])
+	}
+	return segs
+}
+
+// appendText adds a text segment, merging into a trailing text run so adjacent
+// plain spans collapse into one node.
+func appendText(segs []Segment, raw string) []Segment {
+	t := html.UnescapeString(raw)
+	if t == "" {
+		return segs
+	}
+	if n := len(segs); n > 0 && segs[n-1].Type == "text" {
+		segs[n-1].Text += t
+		return segs
+	}
+	return append(segs, Segment{Type: "text", Text: t})
+}
+
+// Count is an unread signal for one conversation.
+type Count struct {
+	ID       string `json:"id"`
+	Mentions int    `json:"mentions"` // messages that @-mention you
+	Unread   bool   `json:"unread"`   // has any unread messages
+}
+
+type rawCount struct {
+	ID           string `json:"id"`
+	HasUnreads   bool   `json:"has_unreads"`
+	MentionCount int    `json:"mention_count"`
+}
+
+// Counts asks Slack (the same client.counts endpoint the web app uses) which
+// conversations have unread messages or mentions. Only conversations with
+// something to show are returned.
+func (c *Client) Counts() ([]Count, error) {
+	var r struct {
+		baseResp
+		Channels []rawCount `json:"channels"`
+		MPIMs    []rawCount `json:"mpims"`
+		IMs      []rawCount `json:"ims"`
+	}
+	if err := c.call("client.counts", nil, &r); err != nil {
+		return nil, err
+	}
+	if err := r.err("client.counts"); err != nil {
+		return nil, err
+	}
+
+	var out []Count
+	for _, group := range [][]rawCount{r.Channels, r.MPIMs, r.IMs} {
+		for _, x := range group {
+			if x.HasUnreads || x.MentionCount > 0 {
+				out = append(out, Count{ID: x.ID, Mentions: x.MentionCount, Unread: x.HasUnreads})
+			}
+		}
+	}
+	return out, nil
 }
 
 // PostMessage sends text to a channel/DM by ID.

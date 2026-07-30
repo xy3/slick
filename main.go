@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -100,6 +101,7 @@ func main() {
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/setup", s.handleSetup)
 	mux.HandleFunc("/api/conversations", s.handleConversations)
+	mux.HandleFunc("/api/notifications", s.handleNotifications)
 	mux.HandleFunc("/api/history", s.handleHistory)
 	mux.HandleFunc("/api/send", s.handleSend)
 
@@ -157,29 +159,100 @@ func (s *server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "setup.html", nil)
 }
 
-func (s *server) handleConversations(w http.ResponseWriter, r *http.Request) {
+// conversations returns the picker list, refreshing the 5-minute cache as
+// needed. The returned client is the live one used for the fetch (nil if we're
+// unconfigured).
+func (s *server) conversations() (*slack.Client, []slack.Conversation, error) {
 	s.mu.RLock()
 	client := s.client
 	cached := s.convs
 	fresh := time.Since(s.convTime) < 5*time.Minute
 	s.mu.RUnlock()
 	if client == nil {
+		return nil, nil, nil
+	}
+	if cached != nil && fresh {
+		return client, cached, nil
+	}
+	convs, err := client.Conversations()
+	if err != nil {
+		return client, nil, err
+	}
+	s.mu.Lock()
+	s.convs, s.convTime = convs, time.Now()
+	s.mu.Unlock()
+	return client, convs, nil
+}
+
+func (s *server) handleConversations(w http.ResponseWriter, r *http.Request) {
+	client, convs, err := s.conversations()
+	if client == nil {
 		http.Error(w, "not configured", http.StatusUnauthorized)
 		return
 	}
-
-	if cached == nil || !fresh {
-		convs, err := client.Conversations()
-		if err != nil {
-			http.Error(w, friendly(err), http.StatusBadGateway)
-			return
-		}
-		s.mu.Lock()
-		s.convs, s.convTime = convs, time.Now()
-		cached = convs
-		s.mu.Unlock()
+	if err != nil {
+		http.Error(w, friendly(err), http.StatusBadGateway)
+		return
 	}
-	writeJSON(w, cached)
+	writeJSON(w, convs)
+}
+
+// notification is one unread conversation, surfaced on the main page.
+type notification struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Kind     string `json:"kind"`
+	Mentions int    `json:"mentions"`
+	Unread   bool   `json:"unread"`
+}
+
+func (s *server) handleNotifications(w http.ResponseWriter, r *http.Request) {
+	client, convs, err := s.conversations()
+	if client == nil {
+		http.Error(w, "not configured", http.StatusUnauthorized)
+		return
+	}
+	if err != nil {
+		http.Error(w, friendly(err), http.StatusBadGateway)
+		return
+	}
+
+	counts, err := client.Counts()
+	if err != nil {
+		http.Error(w, friendly(err), http.StatusBadGateway)
+		return
+	}
+
+	byID := make(map[string]slack.Conversation, len(convs))
+	for _, c := range convs {
+		byID[c.ID] = c
+	}
+
+	items := make([]notification, 0, len(counts))
+	for _, c := range counts {
+		conv, ok := byID[c.ID]
+		if !ok {
+			continue // muted/archived or not a target we can open
+		}
+		items = append(items, notification{
+			ID:       c.ID,
+			Name:     conv.Name,
+			Kind:     conv.Kind,
+			Mentions: c.Mentions,
+			Unread:   c.Unread,
+		})
+	}
+	// Mentions first, then unread-only; alphabetical within each.
+	sort.Slice(items, func(i, j int) bool {
+		if (items[i].Mentions > 0) != (items[j].Mentions > 0) {
+			return items[i].Mentions > 0
+		}
+		if items[i].Mentions != items[j].Mentions {
+			return items[i].Mentions > items[j].Mentions
+		}
+		return items[i].Name < items[j].Name
+	})
+	writeJSON(w, items)
 }
 
 func (s *server) handleHistory(w http.ResponseWriter, r *http.Request) {

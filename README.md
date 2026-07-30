@@ -27,9 +27,12 @@ Nothing leaves your machine except calls to Slack. If Slack rotates the token
 
 ## Use
 
+- A compact **unread/mentions** summary sits on the main page; click any row to
+  jump straight into that conversation.
 - Type to fuzzy-search a channel or person; `↑`/`↓` to move, `Enter` to pick.
-- The last ~25 messages appear and refresh every few seconds while open.
-- Write your message; `⌘/Ctrl+Enter` to send, `Esc` to change recipient.
+- The last ~25 messages appear and refresh every few seconds while open. Code
+  blocks render monochrome and links are clickable.
+- Write your message; `Shift+Enter` to send, `Esc` to change recipient.
 
 ### A near-global shortcut
 

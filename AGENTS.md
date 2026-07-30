@@ -47,7 +47,7 @@ main.go            Local HTTP server: routing, paste-once auth, config load/save
 slack/client.go    Slack Web API client. Auth via xoxc + d cookie. All calls go
                    through call() -> https://slack.com/api/<method> as urlencoded
                    POST. Caches the users directory (usersCache) for name lookup.
-slack/client_test.go  Unit test for mrkdwn rendering (renderText).
+slack/client_test.go  Unit test for mrkdwn rendering (renderSegments).
 web/               Embedded (go:embed) UI, served from /static/ and rendered as
                    html/template.
   index.html       Main compose UI.
@@ -67,6 +67,7 @@ No third-party Go dependencies — standard library only. `go.mod` module is
 | `/setup`             | GET/POST | Paste-once credentials; POST validates + saves |
 | `/static/*`          | GET    | Embedded CSS/JS                                 |
 | `/api/conversations` | GET    | JSON list of channels/DMs (cached 5 min)        |
+| `/api/notifications` | GET    | Unread/mention conversations (joins `client.counts` with names) |
 | `/api/history?channel=<id>` | GET | Last ~25 messages, oldest first             |
 | `/api/send`          | POST   | `{channel, text}` -> `chat.postMessage`         |
 
@@ -76,28 +77,45 @@ Slack errors.
 ## Slack API methods used
 
 `auth.test`, `conversations.list` (types: public/private/mpim/im, paginated),
-`users.list` (paginated, cached), `conversations.history`, `chat.postMessage`.
+`users.list` (paginated, cached), `conversations.history`, `chat.postMessage`,
+`client.counts` (unread/mention counts — the same undocumented endpoint the web
+app uses; works because we hold a real browser session).
 
-`slack/client.go` also renders Slack **mrkdwn** to plain text: `<@U…>` mentions
-(resolved via the users cache), `<#C…|name>` channels, `<url|text>` links, and
-HTML entity unescaping. See `renderText` and its test.
+`slack/client.go` renders Slack **mrkdwn** into a flat list of **segments**
+(`renderSegments`): `text`, `link` (`<url|text>`), inline `code`, and fenced
+`pre` code blocks. `<@U…>` mentions (resolved via the users cache), `<#C…|name>`
+channels, and HTML entities are handled within text runs. The client emits
+structured segments rather than HTML so the browser can build DOM nodes safely
+via `textContent` (message text is untrusted — never render it as HTML). See
+`renderSegments` and its test.
 
 ## Frontend behavior
 
 - Page loads focused on the recipient search. Fuzzy match ranks prefix >
   substring > subsequence; top 8 shown. `↑`/`↓` move, `Enter` selects.
+- **Notifications**: an unread/mention summary (`#notifs`) sits atop the card in
+  browse mode, polled every 15s. Each row opens that conversation on click. It's
+  hidden during compose to keep that view distraction-free, and restored on
+  `Esc`/reset. An empty list hides the panel (`.notifs:empty`); fetch failures
+  clear it silently (notifications are ambient — they must never nag).
 - On select: a chip shows the target, recent history renders above the compose
   box, and history **polls every 4s** (and refreshes right after a send).
-- `⌘/Ctrl+Enter` sends; `Esc` clears the recipient and stops polling.
-- All message content is inserted via `textContent` (never `innerHTML`) — keep
-  it that way; message text is untrusted.
+- Message bodies are built from server segments (`renderBody`): links become
+  `<a target="_blank" rel="noopener noreferrer">` (only when the URL is
+  `http(s)`), inline code and fenced blocks get monochrome `code`/`pre` styling.
+- `Shift+Enter` sends (plain `Enter` inserts a newline); `Esc` clears the
+  recipient and stops polling.
+- History re-renders in place on each poll and only auto-scrolls to the bottom
+  when the reader is already there, so scrolling up to read isn't interrupted.
+- All message content is inserted via `textContent` / node creation (never
+  `innerHTML`) — keep it that way; message text is untrusted.
 
 ## Build / test / run
 
 ```sh
 go build ./...          # or: go build -o /tmp/slick .
 go vet ./...
-go test ./...           # renderText coverage
+go test ./...           # renderSegments coverage
 go run .                # http://127.0.0.1:8383
 go run . -addr :9000    # custom listen address
 ```

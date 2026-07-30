@@ -11,6 +11,8 @@
     <div class="brand"><b>slick</b> · {{.Who}}</div>
 
     <div class="card">
+      <div class="notifs" id="notifs" aria-live="polite"></div>
+
       <div class="picker">
         <div class="selected" id="selected">
           <span class="chip"><span id="chipName"></span><button id="clear" title="change">×</button></span>
@@ -29,7 +31,7 @@
           <textarea id="message" placeholder="Write a message…" aria-label="message"></textarea>
         </div>
         <div class="row">
-          <span class="hint"><kbd>⌘/Ctrl</kbd> + <kbd>Enter</kbd> to send · <kbd>Esc</kbd> to change recipient</span>
+          <span class="hint"><kbd>Shift</kbd> + <kbd>Enter</kbd> to send · <kbd>Esc</kbd> to change recipient</span>
           <button class="send" id="send" disabled>Send</button>
         </div>
       </div>

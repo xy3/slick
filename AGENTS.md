@@ -69,8 +69,10 @@ No third-party Go dependencies — standard library only. `go.mod` module is
 | `/api/conversations` | GET    | JSON list of channels/DMs (cached 5 min)        |
 | `/api/notifications` | GET    | Unread/mention conversations (joins `client.counts` with names) |
 | `/api/history?channel=<id>` | GET | Last ~25 messages, oldest first             |
+| `/api/replies?channel=<id>&thread=<ts>` | GET | A thread: parent + replies, oldest first |
 | `/api/mark`          | POST   | `{channel, ts}` -> `conversations.mark` (clears unread) |
-| `/api/send`          | POST   | `{channel, text}` -> `chat.postMessage`         |
+| `/api/file?u=<url>`  | GET    | Auth proxy for Slack images (Slack hosts + `image/*` only) |
+| `/api/send`          | POST   | `{channel, text, thread?}` -> `chat.postMessage` (thread replies) |
 
 API handlers return `401` when unconfigured and `502` (`friendly()` message) on
 Slack errors.
@@ -78,10 +80,14 @@ Slack errors.
 ## Slack API methods used
 
 `auth.test`, `conversations.list` (types: public/private/mpim/im, paginated),
-`users.list` (paginated, cached), `conversations.history`, `chat.postMessage`,
-`conversations.mark` (clears unread when you view a conversation),
-`client.counts` (unread/mention counts — the same undocumented endpoint the web
-app uses; works because we hold a real browser session).
+`users.list` (paginated, cached), `conversations.history`,
+`conversations.replies` (thread parent + replies), `chat.postMessage` (with
+optional `thread_ts` for thread replies), `conversations.mark` (clears unread
+when you view a conversation), `client.counts` (unread/mention counts — the same
+undocumented endpoint the web app uses; works because we hold a real browser
+session). Images are fetched with an authenticated GET (`FetchFile`) and proxied
+via `/api/file`, since Slack file URLs (`url_private`, thumbnails) require the
+same token+cookie and can't be loaded by the browser directly.
 
 `slack/client.go` renders Slack **mrkdwn** into a flat list of **segments**
 (`renderSegments`): `text`, `link` (`<url|text>`), inline `code`, and fenced
@@ -104,7 +110,14 @@ via `textContent` (message text is untrusted — never render it as HTML). See
   box, and history **polls every 4s** (and refreshes right after a send).
 - Message bodies are built from server segments (`renderBody`): links become
   `<a target="_blank" rel="noopener noreferrer">` (only when the URL is
-  `http(s)`), inline code and fenced blocks get monochrome `code`/`pre` styling.
+  `http(s)`), inline code and fenced blocks get monochrome `code`/`pre` styling,
+  and `image` segments render a bounded thumbnail linking to the full image —
+  both routed through `/api/file` (`fileProxy`).
+- **Threads**: a parent message with replies shows an "N replies" pill; clicking
+  it opens the thread (parent + replies) in place, with a back bar. While a
+  thread is open, sending posts a reply into it (`thread` in the send body) and
+  polling follows the thread. `Esc` steps back out of the thread first, then out
+  to recipient selection.
 - `Shift+Enter` sends (plain `Enter` inserts a newline); `Esc` clears the
   recipient and stops polling.
 - History re-renders in place on each poll and only auto-scrolls to the bottom
@@ -144,7 +157,9 @@ otherwise.
   connected; consider hiding it behind a flag until verified.
 - The "shortcut" is in-tab (the page opens compose-ready). A true system-wide
   hotkey would require a native window (e.g. Wails) — a different build.
-- Not yet: threads, message editing, reactions, multi-workspace.
+- Threads are read + reply (no thread-level unread badges yet). Images are
+  read-only (viewing); slick does not upload files.
+- Not yet: message editing, reactions, non-image file previews, multi-workspace.
 - Single-user, single-workspace; no concurrent-session handling beyond the
   RWMutex around the live client + caches.
 ```

@@ -31,8 +31,11 @@ Nothing leaves your machine except calls to Slack. If Slack rotates the token
   jump straight into that conversation.
 - Type to fuzzy-search a channel or person; `↑`/`↓` to move, `Enter` to pick.
 - The last ~25 messages appear and refresh every few seconds while open. Code
-  blocks render monochrome and links are clickable.
-- Write your message; `Shift+Enter` to send, `Esc` to change recipient.
+  blocks render monochrome, links are clickable, and images show inline.
+- A message with replies shows an **N replies** pill — click to open the thread
+  in place; while it's open, `Shift+Enter` posts a reply into it.
+- Write your message; `Shift+Enter` to send, `Esc` to step back (out of a
+  thread, then out to recipient selection).
 
 ### A near-global shortcut
 
@@ -55,4 +58,4 @@ window and bind an OS hotkey to it:
 
 - **True realtime.** History currently refreshes by polling every 4s; a
   WebSocket (the browser client's flannel/RTM socket) would be instant.
-- **Threads**, message editing, reactions, and multi-workspace.
+- Message editing, reactions, file uploads, and multi-workspace.

@@ -7,9 +7,11 @@ import (
 	"flag"
 	"fmt"
 	"html/template"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -103,7 +105,9 @@ func main() {
 	mux.HandleFunc("/api/conversations", s.handleConversations)
 	mux.HandleFunc("/api/notifications", s.handleNotifications)
 	mux.HandleFunc("/api/history", s.handleHistory)
+	mux.HandleFunc("/api/replies", s.handleReplies)
 	mux.HandleFunc("/api/mark", s.handleMark)
+	mux.HandleFunc("/api/file", s.handleFile)
 	mux.HandleFunc("/api/send", s.handleSend)
 
 	log.Printf("slick → http://%s", *addr)
@@ -277,6 +281,75 @@ func (s *server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, msgs)
 }
 
+func (s *server) handleReplies(w http.ResponseWriter, r *http.Request) {
+	s.mu.RLock()
+	client, me := s.client, s.me
+	s.mu.RUnlock()
+	if client == nil {
+		http.Error(w, "not configured", http.StatusUnauthorized)
+		return
+	}
+	channel := r.URL.Query().Get("channel")
+	thread := r.URL.Query().Get("thread")
+	if channel == "" || thread == "" {
+		http.Error(w, "channel and thread required", http.StatusBadRequest)
+		return
+	}
+	msgs, err := client.Replies(channel, thread, me)
+	if err != nil {
+		http.Error(w, friendly(err), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, msgs)
+}
+
+// handleFile proxies a Slack file (image or thumbnail) through slick's
+// authenticated client, since Slack file URLs can't be fetched by the browser
+// directly. The URL is restricted to Slack hosts and image content only.
+func (s *server) handleFile(w http.ResponseWriter, r *http.Request) {
+	s.mu.RLock()
+	client := s.client
+	s.mu.RUnlock()
+	if client == nil {
+		http.Error(w, "not configured", http.StatusUnauthorized)
+		return
+	}
+
+	raw := r.URL.Query().Get("u")
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || !slackHost(u.Hostname()) {
+		http.Error(w, "unsupported url", http.StatusBadRequest)
+		return
+	}
+
+	resp, err := client.FetchFile(raw)
+	if err != nil {
+		http.Error(w, friendly(err), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		http.Error(w, "upstream error", http.StatusBadGateway)
+		return
+	}
+	ct := resp.Header.Get("Content-Type")
+	if !strings.HasPrefix(ct, "image/") {
+		http.Error(w, "not an image", http.StatusUnsupportedMediaType)
+		return
+	}
+	w.Header().Set("Content-Type", ct)
+	if cl := resp.Header.Get("Content-Length"); cl != "" {
+		w.Header().Set("Content-Length", cl)
+	}
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	_, _ = io.Copy(w, resp.Body)
+}
+
+// slackHost reports whether h is a Slack-owned host we'll proxy files from.
+func slackHost(h string) bool {
+	return h == "slack.com" || strings.HasSuffix(h, ".slack.com")
+}
+
 func (s *server) handleMark(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
@@ -325,6 +398,7 @@ func (s *server) handleSend(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Channel string `json:"channel"`
 		Text    string `json:"text"`
+		Thread  string `json:"thread"` // optional: reply into this thread
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -334,7 +408,7 @@ func (s *server) handleSend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "channel and text required", http.StatusBadRequest)
 		return
 	}
-	if err := client.PostMessage(body.Channel, body.Text); err != nil {
+	if err := client.PostMessage(body.Channel, body.Text, body.Thread); err != nil {
 		http.Error(w, friendly(err), http.StatusBadGateway)
 		return
 	}

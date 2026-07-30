@@ -7,6 +7,8 @@
   const selected = $("selected");
   const chipName = $("chipName");
   const notifs = $("notifs");
+  const threadbar = $("threadbar");
+  const threadBack = $("threadBack");
   const thread = $("thread");
   const compose = $("compose");
   const message = $("message");
@@ -17,6 +19,7 @@
   let shown = [];      // currently filtered
   let active = 0;      // highlighted index in `shown`
   let target = null;   // chosen conversation
+  let threadTS = null; // open thread's parent ts, or null for channel view
 
   // --- data ---------------------------------------------------------------
   fetch("/api/conversations")
@@ -136,7 +139,7 @@
     return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   }
 
-  function renderThread(msgs) {
+  function renderThread(msgs, inThread) {
     // Only stick to the bottom if the reader is already there — otherwise a
     // poll while they're scrolled up reading history shouldn't yank them down.
     const atBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 48;
@@ -160,10 +163,22 @@
       at.textContent = fmtTime(m.ts);
       who.append(name, at);
       li.append(who, renderBody(m.segs));
+      // Outside a thread, a parent with replies gets a click-to-open affordance.
+      if (!inThread && m.replies > 0) {
+        const rep = document.createElement("button");
+        rep.className = "replies";
+        rep.type = "button";
+        rep.textContent = `${m.replies} repl${m.replies > 1 ? "ies" : "y"}`;
+        rep.addEventListener("click", () => openThread(m.thread || m.ts));
+        li.appendChild(rep);
+      }
       thread.appendChild(li);
     }
     if (atBottom) thread.scrollTop = thread.scrollHeight;
   }
+
+  // /api/file proxies authenticated Slack file URLs so the browser can load them.
+  function fileProxy(u) { return "/api/file?u=" + encodeURIComponent(u); }
 
   // Build a message body from server segments. Content is untrusted, so every
   // piece goes in via textContent / node creation — never innerHTML.
@@ -192,6 +207,18 @@
           a.rel = "noopener noreferrer";
         }
         body.appendChild(a);
+      } else if (seg.type === "image") {
+        const a = document.createElement("a");
+        a.className = "img";
+        a.href = fileProxy(seg.href || seg.url);
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        const img = document.createElement("img");
+        img.src = fileProxy(seg.url);
+        img.alt = seg.text || "";
+        img.loading = "lazy";
+        a.appendChild(img);
+        body.appendChild(a);
       } else {
         body.appendChild(document.createTextNode(seg.text));
       }
@@ -205,13 +232,50 @@
     fetch("/api/history?channel=" + encodeURIComponent(id))
       .then((r) => (r.ok ? r.json() : Promise.reject(r)))
       .then((msgs) => {
-        if (target && target.id === id) {
-          renderThread(msgs);
+        if (target && target.id === id && !threadTS) {
+          renderThread(msgs, false);
           markRead(id, msgs);
         }
       })
       .catch(() => {});
   }
+
+  function loadReplies(id, ts) {
+    fetch("/api/replies?channel=" + encodeURIComponent(id) + "&thread=" + encodeURIComponent(ts))
+      .then((r) => (r.ok ? r.json() : Promise.reject(r)))
+      .then((msgs) => {
+        if (target && target.id === id && threadTS === ts) renderThread(msgs, true);
+      })
+      .catch(() => {});
+  }
+
+  // refresh loads whichever view is open — the thread if one is, else history.
+  function refresh() {
+    if (!target) return;
+    if (threadTS) loadReplies(target.id, threadTS);
+    else loadHistory(target.id);
+  }
+
+  function openThread(ts) {
+    threadTS = ts;
+    threadbar.style.display = "flex";
+    thread.innerHTML = "";
+    message.placeholder = "Reply in thread…";
+    loadReplies(target.id, ts);
+    startPolling();
+    message.focus();
+  }
+
+  function closeThread() {
+    threadTS = null;
+    threadbar.style.display = "none";
+    thread.innerHTML = "";
+    message.placeholder = "Write a message…";
+    loadHistory(target.id);
+    startPolling();
+  }
+
+  threadBack.addEventListener("click", closeThread);
 
   // Viewing a conversation clears its unread state on Slack, so it drops off
   // the notifications panel. Only send when the newest message has changed.
@@ -227,9 +291,9 @@
     }).catch(() => {});
   }
 
-  function startPolling(id) {
+  function startPolling() {
     stopPolling();
-    pollTimer = setInterval(() => loadHistory(id), 4000);
+    pollTimer = setInterval(refresh, 4000);
   }
   function stopPolling() {
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
@@ -238,6 +302,9 @@
   // --- selection flow -----------------------------------------------------
   function choose(c) {
     target = c;
+    threadTS = null;
+    threadbar.style.display = "none";
+    message.placeholder = "Write a message…";
     stopNotifPolling();
     notifs.innerHTML = "";
     chipName.textContent = c.name;
@@ -248,13 +315,16 @@
     thread.classList.add("show");
     thread.innerHTML = "";
     loadHistory(c.id);
-    startPolling(c.id);
+    startPolling();
     message.focus();
   }
 
   function reset() {
     stopPolling();
     target = null;
+    threadTS = null;
+    threadbar.style.display = "none";
+    message.placeholder = "Write a message…";
     selected.style.display = "none";
     compose.style.display = "none";
     thread.classList.remove("show");
@@ -290,11 +360,14 @@
     if (e.key === "Enter" && e.shiftKey) { e.preventDefault(); doSend(); }
   });
 
-  // Esc changes recipient no matter what has focus (thread, a link, nothing),
-  // as long as one is selected. The search field's own Esc (clear query) only
+  // Esc steps back no matter what has focus: out of an open thread first, then
+  // out to recipient selection. The search field's own Esc (clear query) only
   // matters while browsing, when no target is set.
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && target) { e.preventDefault(); reset(); }
+    if (e.key !== "Escape" || !target) return;
+    e.preventDefault();
+    if (threadTS) closeThread();
+    else reset();
   });
 
   send.addEventListener("click", doSend);
@@ -304,19 +377,19 @@
     if (!target || !text) return;
     send.disabled = true;
     flash("Sending…");
+    const inThread = threadTS;
     fetch("/api/send", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ channel: target.id, text }),
+      body: JSON.stringify({ channel: target.id, text, thread: inThread || "" }),
     })
       .then((r) => (r.ok ? r.json() : r.text().then((t) => Promise.reject(t))))
       .then(() => {
-        flash(`Sent to ${target.name}`);
-        const id = target.id;
+        flash(inThread ? "Replied in thread" : `Sent to ${target.name}`);
         message.value = "";
         send.disabled = true;
         message.focus();
-        loadHistory(id); // reflect the message we just sent
+        refresh(); // reflect the message we just sent
       })
       .catch((err) => { flash(String(err).trim() || "Send failed", true); send.disabled = false; });
   }

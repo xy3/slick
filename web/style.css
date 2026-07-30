@@ -244,6 +244,54 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .thread li.mine .who { color: var(--text); }
 .thread .empty { color: var(--muted); text-align: center; padding: 18px; font-size: 13px; }
 
+/* Inline images */
+.thread .body a.img { display: inline-block; margin-top: 4px; }
+.thread .body img {
+  display: block;
+  max-width: 100%;
+  max-height: 320px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+}
+
+/* Reply / thread affordance */
+.thread .replies {
+  all: unset;
+  cursor: pointer;
+  display: inline-block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+.thread .replies:hover { color: var(--text); border-color: var(--ring); }
+
+.threadbar {
+  display: none;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 6px 2px;
+}
+.threadbar-label {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.threadbar button {
+  all: unset;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+.threadbar button:hover { color: var(--text); border-color: var(--ring); }
+
 /* Message box */
 .compose { margin-top: 10px; display: none; }
 .compose textarea { min-height: 120px; }

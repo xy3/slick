@@ -258,29 +258,44 @@ func (c *Client) fetchUsers() (map[string]user, error) {
 }
 
 // Segment is one piece of a rendered message: plain text, a link, inline code,
-// or a fenced code block. The client builds DOM nodes from these, so message
-// content never has to be trusted as HTML.
+// a fenced code block, or an image. The client builds DOM nodes from these, so
+// message content never has to be trusted as HTML.
 type Segment struct {
-	Type string `json:"type"`          // text | link | code | pre
-	Text string `json:"text"`          // display text (code body for pre/code)
-	URL  string `json:"url,omitempty"` // for link segments only; always http(s)
+	Type string `json:"type"`           // text | link | code | pre | image
+	Text string `json:"text"`           // display text (code body for pre/code, alt for image)
+	URL  string `json:"url,omitempty"`  // link target, or image thumbnail src
+	Href string `json:"href,omitempty"` // image: full-size link target
 }
 
 // Message is one line of conversation history, rendered into safe segments.
 type Message struct {
-	User string    `json:"user"` // author display name
-	Segs []Segment `json:"segs"` // rendered message body
-	TS   string    `json:"ts"`   // Slack timestamp ("1690000000.000100")
-	Mine bool      `json:"mine"` // authored by the current user
+	User    string    `json:"user"`              // author display name
+	Segs    []Segment `json:"segs"`              // rendered message body
+	TS      string    `json:"ts"`                // Slack timestamp ("1690000000.000100")
+	Mine    bool      `json:"mine"`              // authored by the current user
+	Thread  string    `json:"thread,omitempty"`  // parent ts, if this message has a thread
+	Replies int       `json:"replies,omitempty"` // reply count, for thread parents
 }
 
 type rawMessage struct {
-	Type    string `json:"type"`
-	Subtype string `json:"subtype"`
-	User    string `json:"user"`
-	BotID   string `json:"bot_id"`
-	Text    string `json:"text"`
-	TS      string `json:"ts"`
+	Type       string    `json:"type"`
+	Subtype    string    `json:"subtype"`
+	User       string    `json:"user"`
+	BotID      string    `json:"bot_id"`
+	Text       string    `json:"text"`
+	TS         string    `json:"ts"`
+	ThreadTS   string    `json:"thread_ts"`
+	ReplyCount int       `json:"reply_count"`
+	Files      []rawFile `json:"files"`
+}
+
+type rawFile struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Mimetype   string `json:"mimetype"`
+	URLPrivate string `json:"url_private"`
+	Thumb360   string `json:"thumb_360"`
+	Thumb720   string `json:"thumb_720"`
 }
 
 // History returns up to limit recent messages, oldest first, ready to display.
@@ -309,22 +324,86 @@ func (c *Client) History(channelID string, limit int, me string) ([]Message, err
 		if m.Type != "message" || m.Subtype == "channel_join" || m.Subtype == "channel_leave" {
 			continue
 		}
-		name := c.name(users, m.User)
-		if name == "" && m.BotID != "" {
-			name = "bot"
-		}
-		out = append(out, Message{
-			User: name,
-			Segs: c.renderSegments(m.Text, users),
-			TS:   m.TS,
-			Mine: me != "" && m.User == me,
-		})
+		out = append(out, c.buildMessage(m, users, me))
 	}
 	// Slack returns newest first; flip to reading order.
 	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
 		out[i], out[j] = out[j], out[i]
 	}
 	return out, nil
+}
+
+// Replies returns a thread: the parent message followed by its replies, oldest
+// first, ready to display.
+func (c *Client) Replies(channelID, threadTS, me string) ([]Message, error) {
+	users, err := c.ensureUsers()
+	if err != nil {
+		return nil, err
+	}
+
+	form := url.Values{}
+	form.Set("channel", channelID)
+	form.Set("ts", threadTS)
+	form.Set("limit", "50")
+	var r struct {
+		baseResp
+		Messages []rawMessage `json:"messages"`
+	}
+	if err := c.call("conversations.replies", form, &r); err != nil {
+		return nil, err
+	}
+	if err := r.err("conversations.replies"); err != nil {
+		return nil, err
+	}
+
+	out := make([]Message, 0, len(r.Messages))
+	for _, m := range r.Messages {
+		if m.Type != "message" {
+			continue
+		}
+		out = append(out, c.buildMessage(m, users, me))
+	}
+	return out, nil // already oldest-first
+}
+
+// buildMessage renders one raw message (text, images, thread info) into the
+// display shape shared by history and thread views.
+func (c *Client) buildMessage(m rawMessage, users map[string]user, me string) Message {
+	name := c.name(users, m.User)
+	if name == "" && m.BotID != "" {
+		name = "bot"
+	}
+
+	segs := c.renderSegments(m.Text, users)
+	for _, f := range m.Files {
+		if !strings.HasPrefix(f.Mimetype, "image/") || f.URLPrivate == "" {
+			continue
+		}
+		src := f.Thumb720
+		if src == "" {
+			src = f.Thumb360
+		}
+		if src == "" {
+			src = f.URLPrivate
+		}
+		// URLs are raw Slack file links; the browser routes them through slick's
+		// authenticated /api/file proxy (they can't be fetched unauthenticated).
+		segs = append(segs, Segment{Type: "image", Text: f.Name, URL: src, Href: f.URLPrivate})
+	}
+
+	msg := Message{
+		User: name,
+		Segs: segs,
+		TS:   m.TS,
+		Mine: me != "" && m.User == me,
+	}
+	// A parent message carries a reply count; surface it so the UI can offer to
+	// open the thread.
+	if m.ReplyCount > 0 {
+		msg.Thread = m.TS
+		msg.Replies = m.ReplyCount
+	}
+	return msg
 }
 
 func (c *Client) name(users map[string]user, id string) string {
@@ -483,14 +562,31 @@ func (c *Client) Mark(channelID, ts string) error {
 	return r.err("conversations.mark")
 }
 
-// PostMessage sends text to a channel/DM by ID.
-func (c *Client) PostMessage(channelID, text string) error {
+// PostMessage sends text to a channel/DM by ID. If threadTS is non-empty the
+// message is posted as a reply in that thread.
+func (c *Client) PostMessage(channelID, text, threadTS string) error {
 	form := url.Values{}
 	form.Set("channel", channelID)
 	form.Set("text", text)
+	if threadTS != "" {
+		form.Set("thread_ts", threadTS)
+	}
 	var r baseResp
 	if err := c.call("chat.postMessage", form, &r); err != nil {
 		return err
 	}
 	return r.err("chat.postMessage")
+}
+
+// FetchFile does an authenticated GET against a Slack file URL (url_private or
+// a thumbnail). Slack file URLs require the same token+cookie as the API, so
+// the browser can't load them directly — slick proxies them through here.
+func (c *Client) FetchFile(rawurl string) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodGet, rawurl, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Cookie", "d="+c.cookie)
+	return c.http.Do(req)
 }

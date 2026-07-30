@@ -14,6 +14,8 @@
   const message = $("message");
   const send = $("send");
   const toast = $("toast");
+  const lightbox = $("lightbox");
+  const lightboxImg = lightbox.querySelector("img");
 
   let all = [];        // every conversation
   let shown = [];      // currently filtered
@@ -144,7 +146,15 @@
     return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   }
 
+  let threadSig = null; // last rendered contents, to skip no-op re-renders
+
   function renderThread(msgs, inThread, animate) {
+    // Skip identical re-renders from polling: rebuilding the DOM every tick
+    // re-creates the <img> nodes, which makes images flash as they re-fade in.
+    // A view change (animate) always renders fresh.
+    const sig = JSON.stringify(msgs || []);
+    if (!animate && sig === threadSig) return;
+    threadSig = sig;
     // Only stick to the bottom if the reader is already there — otherwise a
     // poll while they're scrolled up reading history shouldn't yank them down.
     const atBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 48;
@@ -186,6 +196,28 @@
   // /api/file proxies authenticated Slack file URLs so the browser can load them.
   function fileProxy(u) { return "/api/file?u=" + encodeURIComponent(u); }
 
+  // --- image lightbox -----------------------------------------------------
+  // Click a thumbnail to open the full image in a fading, scaling overlay
+  // instead of navigating away. Esc or a click anywhere closes it.
+  let lightboxCloseTimer = null;
+  function openLightbox(src) {
+    clearTimeout(lightboxCloseTimer);
+    lightboxImg.src = src;
+    lightbox.classList.add("show");
+    lightbox.setAttribute("aria-hidden", "false");
+    requestAnimationFrame(() => lightbox.classList.add("open")); // next frame → transition runs
+  }
+  function closeLightbox() {
+    if (!lightbox.classList.contains("show")) return;
+    lightbox.classList.remove("open");
+    lightbox.setAttribute("aria-hidden", "true");
+    lightboxCloseTimer = setTimeout(() => {
+      lightbox.classList.remove("show");
+      lightboxImg.removeAttribute("src");
+    }, 260); // matches the CSS transition
+  }
+  lightbox.addEventListener("click", closeLightbox);
+
   // Build a message body from server segments. Content is untrusted, so every
   // piece goes in via textContent / node creation — never innerHTML.
   function renderBody(segs) {
@@ -204,6 +236,11 @@
         code.className = "code";
         code.textContent = seg.text;
         body.appendChild(code);
+      } else if (seg.type === "mention") {
+        const span = document.createElement("span");
+        span.className = seg.self ? "mention me" : "mention";
+        span.textContent = seg.text;
+        body.appendChild(span);
       } else if (seg.type === "link") {
         const a = document.createElement("a");
         a.textContent = seg.text;
@@ -214,11 +251,16 @@
         }
         body.appendChild(a);
       } else if (seg.type === "image") {
+        const full = fileProxy(seg.href || seg.url);
         const a = document.createElement("a");
         a.className = "img";
-        a.href = fileProxy(seg.href || seg.url);
-        a.target = "_blank";
+        a.href = full; // real href: middle-click / ⌘-click still opens the file
         a.rel = "noopener noreferrer";
+        a.addEventListener("click", (e) => {
+          if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+          e.preventDefault();
+          openLightbox(full);
+        });
         const img = document.createElement("img");
         img.alt = seg.text || "";
         img.loading = "lazy";
@@ -226,6 +268,18 @@
         img.src = fileProxy(seg.url);
         a.appendChild(img);
         body.appendChild(a);
+      } else if (seg.style === "b") {
+        const el = document.createElement("strong");
+        el.textContent = seg.text;
+        body.appendChild(el);
+      } else if (seg.style === "i") {
+        const el = document.createElement("em");
+        el.textContent = seg.text;
+        body.appendChild(el);
+      } else if (seg.style === "s") {
+        const el = document.createElement("s");
+        el.textContent = seg.text;
+        body.appendChild(el);
       } else {
         body.appendChild(document.createTextNode(seg.text));
       }
@@ -373,7 +427,9 @@
   // out to recipient selection. The search field's own Esc (clear query) only
   // matters while browsing, when no target is set.
   document.addEventListener("keydown", (e) => {
-    if (e.key !== "Escape" || !target) return;
+    if (e.key !== "Escape") return;
+    if (lightbox.classList.contains("show")) { e.preventDefault(); closeLightbox(); return; }
+    if (!target) return;
     e.preventDefault();
     if (threadTS) closeThread();
     else reset();

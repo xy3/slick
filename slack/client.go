@@ -257,14 +257,16 @@ func (c *Client) fetchUsers() (map[string]user, error) {
 	return m, nil
 }
 
-// Segment is one piece of a rendered message: plain text, a link, inline code,
-// a fenced code block, or an image. The client builds DOM nodes from these, so
-// message content never has to be trusted as HTML.
+// Segment is one piece of a rendered message: plain text, a mention, a link,
+// inline code, a fenced code block, or an image. The client builds DOM nodes
+// from these, so message content never has to be trusted as HTML.
 type Segment struct {
-	Type string `json:"type"`           // text | link | code | pre | image
-	Text string `json:"text"`           // display text (code body for pre/code, alt for image)
-	URL  string `json:"url,omitempty"`  // link target, or image thumbnail src
-	Href string `json:"href,omitempty"` // image: full-size link target
+	Type  string `json:"type"`            // text | mention | link | code | pre | image
+	Text  string `json:"text"`            // display text (code body for pre/code, alt for image)
+	URL   string `json:"url,omitempty"`   // link target, or image thumbnail src
+	Href  string `json:"href,omitempty"`  // image: full-size link target
+	Style string `json:"style,omitempty"` // text emphasis: b | i | s
+	Self  bool   `json:"self,omitempty"`  // mention: refers to the current user (or @here/@channel)
 }
 
 // Message is one line of conversation history, rendered into safe segments.
@@ -290,12 +292,14 @@ type rawMessage struct {
 }
 
 type rawFile struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Mimetype   string `json:"mimetype"`
-	URLPrivate string `json:"url_private"`
-	Thumb360   string `json:"thumb_360"`
-	Thumb720   string `json:"thumb_720"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Mimetype    string `json:"mimetype"`
+	URLPrivate  string `json:"url_private"`
+	Thumb360    string `json:"thumb_360"`
+	Thumb720    string `json:"thumb_720"`
+	Thumb360Gif string `json:"thumb_360_gif"` // animated thumbnails, present for GIFs
+	Thumb480Gif string `json:"thumb_480_gif"`
 }
 
 // History returns up to limit recent messages, oldest first, ready to display.
@@ -374,7 +378,7 @@ func (c *Client) buildMessage(m rawMessage, users map[string]user, me string) Me
 		name = "bot"
 	}
 
-	segs := c.renderSegments(m.Text, users)
+	segs := c.renderSegments(m.Text, users, me)
 	for _, f := range m.Files {
 		if !strings.HasPrefix(f.Mimetype, "image/") || f.URLPrivate == "" {
 			continue
@@ -382,6 +386,18 @@ func (c *Client) buildMessage(m rawMessage, users map[string]user, me string) Me
 		src := f.Thumb720
 		if src == "" {
 			src = f.Thumb360
+		}
+		// GIFs animate only via the animated thumbnail (or the original); the
+		// static thumb_* frames would freeze on the first frame.
+		if f.Mimetype == "image/gif" {
+			switch {
+			case f.Thumb480Gif != "":
+				src = f.Thumb480Gif
+			case f.Thumb360Gif != "":
+				src = f.Thumb360Gif
+			default:
+				src = f.URLPrivate
+			}
 		}
 		if src == "" {
 			src = f.URLPrivate
@@ -414,94 +430,148 @@ func (c *Client) name(users map[string]user, id string) string {
 }
 
 var (
-	reUserMention = regexp.MustCompile(`<@([UW][A-Z0-9]+)>`)
-	reChanMention = regexp.MustCompile(`<#[CG][A-Z0-9]+\|([^>]*)>`)
-	reLink        = regexp.MustCompile(`<(https?://[^>|]+)(?:\|([^>]+))?>`)
-	reCodeBlock   = regexp.MustCompile("(?s)```(.*?)```")
-	reInlineCode  = regexp.MustCompile("`([^`]+)`")
+	reCodeBlock  = regexp.MustCompile("(?s)```(.*?)```")
+	reInlineCode = regexp.MustCompile("`([^`]+)`")
+	// Slack wraps mentions, channels, and links in angle brackets; literal `<`
+	// in user text arrives escaped as &lt;, so any real `<…>` is a Slack token.
+	reAngle = regexp.MustCompile(`<([^>]+)>`)
+	// Emphasis: *bold*, ~strike~, _italic_ (underscore boundaries checked below).
+	reEmph = regexp.MustCompile(`(?s)\*(\S(?:[^*\n]*?\S)?)\*|~(\S(?:[^~\n]*?\S)?)~|_(\S(?:[^_\n]*?\S)?)_`)
 )
 
 // renderSegments turns Slack mrkdwn into a flat list of display segments:
-// fenced code blocks, inline code, links, and plain text (with mentions and
-// channel references resolved to readable names).
-func (c *Client) renderSegments(s string, users map[string]user) []Segment {
+// fenced code blocks, inline code, links, mentions, emphasis, and plain text
+// (mentions and channel references resolved to readable names).
+func (c *Client) renderSegments(s string, users map[string]user, me string) []Segment {
 	var segs []Segment
 	last := 0
 	for _, m := range reCodeBlock.FindAllStringSubmatchIndex(s, -1) {
 		if m[0] > last {
-			segs = append(segs, c.inlineSegments(s[last:m[0]], users)...)
+			segs = append(segs, c.inlineSegments(s[last:m[0]], users, me)...)
 		}
 		code := strings.Trim(s[m[2]:m[3]], "\n")
 		segs = append(segs, Segment{Type: "pre", Text: html.UnescapeString(code)})
 		last = m[1]
 	}
 	if last < len(s) {
-		segs = append(segs, c.inlineSegments(s[last:], users)...)
+		segs = append(segs, c.inlineSegments(s[last:], users, me)...)
 	}
 	return segs
 }
 
 // inlineSegments splits a non-fenced span into inline-code and rich-text runs.
-func (c *Client) inlineSegments(s string, users map[string]user) []Segment {
+func (c *Client) inlineSegments(s string, users map[string]user, me string) []Segment {
 	var segs []Segment
 	last := 0
 	for _, m := range reInlineCode.FindAllStringSubmatchIndex(s, -1) {
 		if m[0] > last {
-			segs = append(segs, c.textAndLinks(s[last:m[0]], users)...)
+			segs = append(segs, c.richText(s[last:m[0]], users, me)...)
 		}
 		segs = append(segs, Segment{Type: "code", Text: html.UnescapeString(s[m[2]:m[3]])})
 		last = m[1]
 	}
 	if last < len(s) {
-		segs = append(segs, c.textAndLinks(s[last:], users)...)
+		segs = append(segs, c.richText(s[last:], users, me)...)
 	}
 	return segs
 }
 
-// textAndLinks resolves mentions/channels and pulls out <url|label> links,
-// yielding text and link segments.
-func (c *Client) textAndLinks(s string, users map[string]user) []Segment {
-	s = reUserMention.ReplaceAllStringFunc(s, func(m string) string {
-		id := reUserMention.FindStringSubmatch(m)[1]
-		if n := c.name(users, id); n != "" {
-			return "@" + n
-		}
-		return "@someone"
-	})
-	s = reChanMention.ReplaceAllString(s, "#$1")
-
+// richText pulls Slack angle-bracket tokens (mentions, channels, links) out of a
+// span and runs emphasis parsing over the plain text between them.
+func (c *Client) richText(s string, users map[string]user, me string) []Segment {
 	var segs []Segment
 	last := 0
-	for _, m := range reLink.FindAllStringSubmatchIndex(s, -1) {
+	for _, m := range reAngle.FindAllStringSubmatchIndex(s, -1) {
 		if m[0] > last {
-			segs = appendText(segs, s[last:m[0]])
+			segs = appendEmph(segs, s[last:m[0]])
 		}
-		link := s[m[2]:m[3]]
-		text := link
-		if m[4] >= 0 { // captured label
-			text = s[m[4]:m[5]]
-		}
-		segs = append(segs, Segment{
-			Type: "link",
-			Text: html.UnescapeString(text),
-			URL:  html.UnescapeString(link),
-		})
+		segs = append(segs, c.angleSegment(s[m[2]:m[3]], users, me))
 		last = m[1]
 	}
 	if last < len(s) {
-		segs = appendText(segs, s[last:])
+		segs = appendEmph(segs, s[last:])
 	}
 	return segs
 }
 
-// appendText adds a text segment, merging into a trailing text run so adjacent
-// plain spans collapse into one node.
-func appendText(segs []Segment, raw string) []Segment {
+// angleSegment renders a single Slack `<…>` token into a mention or link segment.
+func (c *Client) angleSegment(inner string, users map[string]user, me string) Segment {
+	switch inner[0] {
+	case '@': // user mention: <@U123> or <@U123|label>
+		id := inner[1:]
+		if i := strings.IndexByte(id, '|'); i >= 0 {
+			id = id[:i]
+		}
+		name := c.name(users, id)
+		if name == "" {
+			name = "someone"
+		}
+		return Segment{Type: "mention", Text: "@" + name, Self: id == me}
+	case '#': // channel: <#C42|general>
+		label := inner[1:]
+		if i := strings.IndexByte(label, '|'); i >= 0 {
+			label = label[i+1:]
+		}
+		return Segment{Type: "mention", Text: "#" + label}
+	case '!': // broadcast: <!here>, <!channel>, <!everyone>, <!subteam^ID|@grp>
+		rest := inner[1:]
+		if i := strings.IndexByte(rest, '|'); i >= 0 { // named group carries its label
+			return Segment{Type: "mention", Text: "@" + strings.TrimPrefix(rest[i+1:], "@"), Self: true}
+		}
+		return Segment{Type: "mention", Text: "@" + rest, Self: true}
+	default: // link: <https://x|label> or bare <https://x>
+		link, text := inner, inner
+		if i := strings.IndexByte(inner, '|'); i >= 0 {
+			link, text = inner[:i], inner[i+1:]
+		}
+		return Segment{Type: "link", Text: html.UnescapeString(text), URL: html.UnescapeString(link)}
+	}
+}
+
+// appendEmph unescapes a plain span, splits it into emphasis-styled text runs,
+// and appends them (coalescing adjacent unstyled runs into one node).
+func appendEmph(segs []Segment, raw string) []Segment {
 	t := html.UnescapeString(raw)
 	if t == "" {
 		return segs
 	}
-	if n := len(segs); n > 0 && segs[n-1].Type == "text" {
+	last := 0
+	for _, m := range reEmph.FindAllStringSubmatchIndex(t, -1) {
+		style, g := "b", 2
+		switch {
+		case m[4] >= 0:
+			style, g = "s", 4
+		case m[6] >= 0:
+			style, g = "i", 6
+		}
+		// Underscore italic must sit on word boundaries, so file_names_like_this
+		// aren't mangled into italics.
+		if style == "i" && ((m[0] > 0 && isWordByte(t[m[0]-1])) || (m[1] < len(t) && isWordByte(t[m[1]]))) {
+			continue
+		}
+		if m[0] > last {
+			segs = appendText(segs, t[last:m[0]])
+		}
+		segs = append(segs, Segment{Type: "text", Text: t[m[g]:m[g+1]], Style: style})
+		last = m[1]
+	}
+	if last < len(t) {
+		segs = appendText(segs, t[last:])
+	}
+	return segs
+}
+
+func isWordByte(b byte) bool {
+	return b == '_' || (b >= '0' && b <= '9') || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+}
+
+// appendText adds an unstyled text segment, merging into a trailing plain run so
+// adjacent spans collapse into one node.
+func appendText(segs []Segment, t string) []Segment {
+	if t == "" {
+		return segs
+	}
+	if n := len(segs); n > 0 && segs[n-1].Type == "text" && segs[n-1].Style == "" {
 		segs[n-1].Text += t
 		return segs
 	}

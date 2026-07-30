@@ -265,6 +265,22 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
   text-underline-offset: 2px;
 }
 .thread .body a:hover { text-decoration-color: var(--text); }
+/* Mentions & channel refs render as subtle tags; a mention of you stands out. */
+.thread .body .mention {
+  color: var(--text);
+  background: var(--panel-2);
+  border-radius: 5px;
+  padding: 0 4px;
+  font-weight: 500;
+}
+.thread .body .mention.me {
+  color: #0b0b0d;
+  background: var(--text);
+}
+/* Emphasis */
+.thread .body strong { font-weight: 700; }
+.thread .body em { font-style: italic; }
+.thread .body s { color: var(--muted); }
 .thread .body code.code {
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   font-size: 12.5px;
@@ -290,8 +306,8 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .thread li.mine .who { color: var(--text); }
 .thread .empty { color: var(--muted); text-align: center; padding: 18px; font-size: 13px; }
 
-/* Inline images */
-.thread .body a.img { display: inline-block; margin-top: 4px; }
+/* Images — always on their own line, even without a preceding newline */
+.thread .body a.img { display: block; width: fit-content; margin-top: 4px; }
 .thread .body img {
   display: block;
   max-width: 100%;
@@ -386,6 +402,34 @@ button.send:disabled { opacity: 0.4; cursor: default; }
   margin-top: 14px;
 }
 .toast.err { color: var(--danger); }
+
+/* Image lightbox — a fading, scaling overlay instead of navigating away */
+.lightbox {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  background: rgba(6, 6, 8, 0);
+  cursor: zoom-out;
+  transition: background-color 0.24s ease;
+}
+.lightbox.show { display: flex; }
+.lightbox.open { background: rgba(6, 6, 8, 0.82); }
+.lightbox img {
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6);
+  opacity: 0;
+  transform: scale(0.94);
+  transition: opacity 0.24s ease, transform 0.26s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.lightbox.open img { opacity: 1; transform: none; }
+.thread .body a.img { cursor: zoom-in; }
 
 /* Setup page */
 .setup label { display: block; color: var(--muted); font-size: 13px; margin: 14px 6px 6px; }

@@ -90,12 +90,19 @@ via `/api/file`, since Slack file URLs (`url_private`, thumbnails) require the
 same token+cookie and can't be loaded by the browser directly.
 
 `slack/client.go` renders Slack **mrkdwn** into a flat list of **segments**
-(`renderSegments`): `text`, `link` (`<url|text>`), inline `code`, and fenced
-`pre` code blocks. `<@U…>` mentions (resolved via the users cache), `<#C…|name>`
-channels, and HTML entities are handled within text runs. The client emits
+(`renderSegments`): `text` (with a `style` of `b`/`i`/`s` for `*bold*`,
+`_italic_`, `~strike~`), `mention` (`<@U…>` users resolved via the users cache,
+`<#C…|name>` channels, and `<!here>`/`<!channel>` broadcasts — a `self` flag
+marks a mention of the current user), `link` (`<url|text>`), inline `code`, and
+fenced `pre` code blocks. Underscore-italic is only applied on word boundaries so
+`file_names_like_this` survive. HTML entities are unescaped. The client emits
 structured segments rather than HTML so the browser can build DOM nodes safely
 via `textContent` (message text is untrusted — never render it as HTML). See
 `renderSegments` and its test.
+
+Image files render as `image` segments; **GIFs** use Slack's animated thumbnail
+(`thumb_480_gif`/`thumb_360_gif`, falling back to the original) so they play,
+while other images use the static `thumb_720`/`thumb_360`.
 
 ## Frontend behavior
 

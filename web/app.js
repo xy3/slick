@@ -36,10 +36,15 @@
   // Ambient unread/mention summary on the main page. Polled while browsing;
   // paused during compose to keep that view distraction-free.
   let notifTimer = null;
+  let notifSig = ""; // last rendered contents, so we only animate on change
 
   function renderNotifs(items) {
+    const sig = (items || []).map((i) => i.id + ":" + i.mentions).join(",");
+    const changed = sig !== notifSig;
+    notifSig = sig;
     notifs.innerHTML = "";
     if (!items || items.length === 0) return; // empty: CSS hides the panel
+    notifs.classList.toggle("intro", changed);
     const head = document.createElement("div");
     head.className = "notifs-head";
     const mentions = items.reduce((n, it) => n + (it.mentions > 0 ? 1 : 0), 0);
@@ -139,10 +144,11 @@
     return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   }
 
-  function renderThread(msgs, inThread) {
+  function renderThread(msgs, inThread, animate) {
     // Only stick to the bottom if the reader is already there — otherwise a
     // poll while they're scrolled up reading history shouldn't yank them down.
     const atBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 48;
+    thread.classList.toggle("intro", !!animate); // animate only on view change
     thread.innerHTML = "";
     if (!msgs || msgs.length === 0) {
       const li = document.createElement("li");
@@ -214,9 +220,10 @@
         a.target = "_blank";
         a.rel = "noopener noreferrer";
         const img = document.createElement("img");
-        img.src = fileProxy(seg.url);
         img.alt = seg.text || "";
         img.loading = "lazy";
+        img.addEventListener("load", () => img.classList.add("loaded"));
+        img.src = fileProxy(seg.url);
         a.appendChild(img);
         body.appendChild(a);
       } else {
@@ -228,32 +235,33 @@
 
   const markedTs = {}; // channel id -> newest ts we've marked read
 
-  function loadHistory(id) {
+  function loadHistory(id, animate) {
     fetch("/api/history?channel=" + encodeURIComponent(id))
       .then((r) => (r.ok ? r.json() : Promise.reject(r)))
       .then((msgs) => {
         if (target && target.id === id && !threadTS) {
-          renderThread(msgs, false);
+          renderThread(msgs, false, animate);
           markRead(id, msgs);
         }
       })
       .catch(() => {});
   }
 
-  function loadReplies(id, ts) {
+  function loadReplies(id, ts, animate) {
     fetch("/api/replies?channel=" + encodeURIComponent(id) + "&thread=" + encodeURIComponent(ts))
       .then((r) => (r.ok ? r.json() : Promise.reject(r)))
       .then((msgs) => {
-        if (target && target.id === id && threadTS === ts) renderThread(msgs, true);
+        if (target && target.id === id && threadTS === ts) renderThread(msgs, true, animate);
       })
       .catch(() => {});
   }
 
   // refresh loads whichever view is open — the thread if one is, else history.
+  // Poll-driven, so it never animates (that would flicker the list every tick).
   function refresh() {
     if (!target) return;
-    if (threadTS) loadReplies(target.id, threadTS);
-    else loadHistory(target.id);
+    if (threadTS) loadReplies(target.id, threadTS, false);
+    else loadHistory(target.id, false);
   }
 
   function openThread(ts) {
@@ -261,7 +269,7 @@
     threadbar.style.display = "flex";
     thread.innerHTML = "";
     message.placeholder = "Reply in thread…";
-    loadReplies(target.id, ts);
+    loadReplies(target.id, ts, true);
     startPolling();
     message.focus();
   }
@@ -271,7 +279,7 @@
     threadbar.style.display = "none";
     thread.innerHTML = "";
     message.placeholder = "Write a message…";
-    loadHistory(target.id);
+    loadHistory(target.id, true);
     startPolling();
   }
 
@@ -307,6 +315,7 @@
     message.placeholder = "Write a message…";
     stopNotifPolling();
     notifs.innerHTML = "";
+    notifSig = ""; // re-animate when the panel returns on reset
     chipName.textContent = c.name;
     searchField.style.display = "none";
     results.innerHTML = "";
@@ -314,7 +323,7 @@
     compose.style.display = "block";
     thread.classList.add("show");
     thread.innerHTML = "";
-    loadHistory(c.id);
+    loadHistory(c.id, true);
     startPolling();
     message.focus();
   }
@@ -398,7 +407,13 @@
   function flash(msg, isErr) {
     toast.textContent = msg;
     toast.classList.toggle("err", !!isErr);
+    toast.classList.remove("pop");
+    void toast.offsetWidth; // reflow so the animation restarts on repeat toasts
+    if (msg) toast.classList.add("pop");
     clearTimeout(toastTimer);
-    if (!isErr) toastTimer = setTimeout(() => { toast.textContent = ""; }, 2600);
+    if (!isErr) toastTimer = setTimeout(() => {
+      toast.textContent = "";
+      toast.classList.remove("pop");
+    }, 2600);
   }
 })();

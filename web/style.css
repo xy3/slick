@@ -26,6 +26,52 @@
 ::-webkit-scrollbar-thumb:hover { background: var(--muted); background-clip: padding-box; }
 ::-webkit-scrollbar-corner { background: transparent; }
 
+/* Motion — restrained entrances + smooth hovers.
+   List entrances are gated behind .intro (set only on real changes, never on
+   the background polls) so nothing flickers on refresh. */
+@keyframes cardIn { from { opacity: 0; transform: translateY(10px) scale(0.99); } to { opacity: 1; transform: none; } }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes riseIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes toastPop { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+.brand { animation: fadeIn 0.6s ease both; }
+.card { animation: cardIn 0.5s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+
+/* Revealed on select (their display toggles from none) */
+.selected, .threadbar { animation: riseIn 0.26s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+.compose { animation: riseIn 0.3s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+
+/* Picker results animate on every keystroke — that's user-driven, so fine */
+.results li { animation: riseIn 0.2s ease both; }
+.results li:nth-child(2) { animation-delay: 26ms; }
+.results li:nth-child(3) { animation-delay: 52ms; }
+.results li:nth-child(4) { animation-delay: 78ms; }
+.results li:nth-child(5) { animation-delay: 104ms; }
+.results li:nth-child(6) { animation-delay: 130ms; }
+.results li:nth-child(7) { animation-delay: 156ms; }
+.results li:nth-child(8) { animation-delay: 182ms; }
+
+/* Thread + notifications: only when the container is flagged .intro */
+.thread.intro li { animation: riseIn 0.3s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+.notifs.intro .notifs-head { animation: fadeIn 0.3s ease both; }
+.notifs.intro .notif { animation: riseIn 0.24s ease both; }
+.notifs.intro .notif:nth-of-type(2) { animation-delay: 34ms; }
+.notifs.intro .notif:nth-of-type(3) { animation-delay: 68ms; }
+.notifs.intro .notif:nth-of-type(4) { animation-delay: 102ms; }
+.notifs.intro .notif:nth-of-type(5) { animation-delay: 136ms; }
+.notifs.intro .notif:nth-of-type(6) { animation-delay: 170ms; }
+
+.toast.pop { animation: toastPop 0.28s ease both; }
+
+/* Smooth hovers in one place */
+.results li, .notif, .chip button, .replies, .threadbar button {
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+
 html, body {
   height: 100%;
   margin: 0;
@@ -252,7 +298,10 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
   max-height: 320px;
   border-radius: 10px;
   border: 1px solid var(--border);
+  opacity: 0;
+  transition: opacity 0.35s ease;
 }
+.thread .body img.loaded { opacity: 1; }
 
 /* Reply / thread affordance */
 .thread .replies {

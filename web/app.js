@@ -199,11 +199,32 @@
     return body;
   }
 
+  const markedTs = {}; // channel id -> newest ts we've marked read
+
   function loadHistory(id) {
     fetch("/api/history?channel=" + encodeURIComponent(id))
       .then((r) => (r.ok ? r.json() : Promise.reject(r)))
-      .then((msgs) => { if (target && target.id === id) renderThread(msgs); })
+      .then((msgs) => {
+        if (target && target.id === id) {
+          renderThread(msgs);
+          markRead(id, msgs);
+        }
+      })
       .catch(() => {});
+  }
+
+  // Viewing a conversation clears its unread state on Slack, so it drops off
+  // the notifications panel. Only send when the newest message has changed.
+  function markRead(id, msgs) {
+    if (!msgs || !msgs.length) return;
+    const ts = msgs[msgs.length - 1].ts;
+    if (!ts || markedTs[id] === ts) return;
+    markedTs[id] = ts;
+    fetch("/api/mark", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ channel: id, ts }),
+    }).catch(() => {});
   }
 
   function startPolling(id) {
@@ -267,7 +288,13 @@
 
   message.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && e.shiftKey) { e.preventDefault(); doSend(); }
-    else if (e.key === "Escape") { e.preventDefault(); reset(); }
+  });
+
+  // Esc changes recipient no matter what has focus (thread, a link, nothing),
+  // as long as one is selected. The search field's own Esc (clear query) only
+  // matters while browsing, when no target is set.
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && target) { e.preventDefault(); reset(); }
   });
 
   send.addEventListener("click", doSend);

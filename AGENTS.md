@@ -69,6 +69,7 @@ No third-party Go dependencies — standard library only. `go.mod` module is
 | `/api/conversations` | GET    | JSON list of channels/DMs (cached 5 min)        |
 | `/api/notifications` | GET    | Unread/mention conversations (joins `client.counts` with names) |
 | `/api/history?channel=<id>` | GET | Last ~25 messages, oldest first             |
+| `/api/mark`          | POST   | `{channel, ts}` -> `conversations.mark` (clears unread) |
 | `/api/send`          | POST   | `{channel, text}` -> `chat.postMessage`         |
 
 API handlers return `401` when unconfigured and `502` (`friendly()` message) on
@@ -78,6 +79,7 @@ Slack errors.
 
 `auth.test`, `conversations.list` (types: public/private/mpim/im, paginated),
 `users.list` (paginated, cached), `conversations.history`, `chat.postMessage`,
+`conversations.mark` (clears unread when you view a conversation),
 `client.counts` (unread/mention counts — the same undocumented endpoint the web
 app uses; works because we hold a real browser session).
 

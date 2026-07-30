@@ -470,6 +470,19 @@ func (c *Client) Counts() ([]Count, error) {
 	return out, nil
 }
 
+// Mark moves the read cursor for a conversation up to ts, clearing its unread
+// state on Slack (the same thing the web client does when you view a channel).
+func (c *Client) Mark(channelID, ts string) error {
+	form := url.Values{}
+	form.Set("channel", channelID)
+	form.Set("ts", ts)
+	var r baseResp
+	if err := c.call("conversations.mark", form, &r); err != nil {
+		return err
+	}
+	return r.err("conversations.mark")
+}
+
 // PostMessage sends text to a channel/DM by ID.
 func (c *Client) PostMessage(channelID, text string) error {
 	form := url.Values{}

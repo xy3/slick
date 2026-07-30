@@ -103,6 +103,7 @@ func main() {
 	mux.HandleFunc("/api/conversations", s.handleConversations)
 	mux.HandleFunc("/api/notifications", s.handleNotifications)
 	mux.HandleFunc("/api/history", s.handleHistory)
+	mux.HandleFunc("/api/mark", s.handleMark)
 	mux.HandleFunc("/api/send", s.handleSend)
 
 	log.Printf("slick → http://%s", *addr)
@@ -274,6 +275,38 @@ func (s *server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, msgs)
+}
+
+func (s *server) handleMark(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	s.mu.RLock()
+	client := s.client
+	s.mu.RUnlock()
+	if client == nil {
+		http.Error(w, "not configured", http.StatusUnauthorized)
+		return
+	}
+
+	var body struct {
+		Channel string `json:"channel"`
+		TS      string `json:"ts"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if body.Channel == "" || body.TS == "" {
+		http.Error(w, "channel and ts required", http.StatusBadRequest)
+		return
+	}
+	if err := client.Mark(body.Channel, body.TS); err != nil {
+		http.Error(w, friendly(err), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, map[string]bool{"ok": true})
 }
 
 func (s *server) handleSend(w http.ResponseWriter, r *http.Request) {

@@ -81,6 +81,22 @@ func TestRenderSegments(t *testing.T) {
 		}},
 		{"entities in code", "```\na &lt; b\n```", "", []Segment{{Type: "pre", Text: "a < b"}}},
 		{"plain", "plain text", "", []Segment{{Type: "text", Text: "plain text"}}},
+		{"emoji shortcode", "nice :fire: work :+1:", "", []Segment{
+			{Type: "text", Text: "nice \U0001F525 work \U0001F44D"},
+		}},
+		{"unknown emoji shortcode left literal", "custom :my_custom_emoji:", "", []Segment{
+			{Type: "text", Text: "custom :my_custom_emoji:"},
+		}},
+		{"emoji not expanded in code", "run `git :fire:` now", "", []Segment{
+			{Type: "text", Text: "run "},
+			{Type: "code", Text: "git :fire:"},
+			{Type: "text", Text: " now"},
+		}},
+		{"emoji inside emphasis", "so *:fire:* hot", "", []Segment{
+			{Type: "text", Text: "so "},
+			{Type: "text", Text: "\U0001F525", Style: "b"},
+			{Type: "text", Text: " hot"},
+		}},
 	}
 	for _, tc := range cases {
 		if got := c.renderSegments(tc.in, users, tc.me); !reflect.DeepEqual(got, tc.want) {

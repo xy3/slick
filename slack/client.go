@@ -437,7 +437,24 @@ var (
 	reAngle = regexp.MustCompile(`<([^>]+)>`)
 	// Emphasis: *bold*, ~strike~, _italic_ (underscore boundaries checked below).
 	reEmph = regexp.MustCompile(`(?s)\*(\S(?:[^*\n]*?\S)?)\*|~(\S(?:[^~\n]*?\S)?)~|_(\S(?:[^_\n]*?\S)?)_`)
+	// :shortcode: emoji, e.g. :fire:, :+1:, :skin-tone-3:.
+	reEmoji = regexp.MustCompile(`:([a-zA-Z0-9_+-]+):`)
 )
+
+// expandEmoji replaces recognized :shortcode: tokens with their Unicode emoji
+// glyph. Unrecognized tokens (including custom workspace emoji, which have no
+// Unicode form) are left as literal text.
+func expandEmoji(s string) string {
+	if !strings.Contains(s, ":") {
+		return s
+	}
+	return reEmoji.ReplaceAllStringFunc(s, func(tok string) string {
+		if e, ok := emojiByName[tok[1:len(tok)-1]]; ok {
+			return e
+		}
+		return tok
+	})
+}
 
 // renderSegments turns Slack mrkdwn into a flat list of display segments:
 // fenced code blocks, inline code, links, mentions, emphasis, and plain text
@@ -552,7 +569,7 @@ func appendEmph(segs []Segment, raw string) []Segment {
 		if m[0] > last {
 			segs = appendText(segs, t[last:m[0]])
 		}
-		segs = append(segs, Segment{Type: "text", Text: t[m[g]:m[g+1]], Style: style})
+		segs = append(segs, Segment{Type: "text", Text: expandEmoji(t[m[g]:m[g+1]]), Style: style})
 		last = m[1]
 	}
 	if last < len(t) {
@@ -571,6 +588,7 @@ func appendText(segs []Segment, t string) []Segment {
 	if t == "" {
 		return segs
 	}
+	t = expandEmoji(t)
 	if n := len(segs); n > 0 && segs[n-1].Type == "text" && segs[n-1].Style == "" {
 		segs[n-1].Text += t
 		return segs

@@ -7,6 +7,7 @@
   const selected = $("selected");
   const chipName = $("chipName");
   const notifs = $("notifs");
+  const favicon = $("favicon");
   const threadbar = $("threadbar");
   const threadBack = $("threadBack");
   const thread = $("thread");
@@ -40,7 +41,15 @@
   let notifTimer = null;
   let notifSig = ""; // last rendered contents, so we only animate on change
 
+  // Swap the tab favicon to a badged version while anything is unread, so a
+  // background tab still signals new activity.
+  function setFaviconBadge(on) {
+    const href = on ? "/static/favicon-badge.svg" : "/static/favicon.svg";
+    if (favicon.getAttribute("href") !== href) favicon.setAttribute("href", href);
+  }
+
   function renderNotifs(items) {
+    setFaviconBadge(!!(items && items.length));
     const sig = (items || []).map((i) => i.id + ":" + i.mentions).join(",");
     const changed = sig !== notifSig;
     notifSig = sig;
@@ -76,7 +85,7 @@
     fetch("/api/notifications")
       .then((r) => (r.ok ? r.json() : Promise.reject(r)))
       .then((items) => { if (!target) renderNotifs(items); })
-      .catch(() => { notifs.innerHTML = ""; }); // stay quiet on failure
+      .catch(() => { notifs.innerHTML = ""; setFaviconBadge(false); }); // stay quiet on failure
   }
 
   function startNotifPolling() {

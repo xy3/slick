@@ -68,7 +68,8 @@ No third-party Go dependencies — standard library only. `go.mod` module is
 | `/static/*`          | GET    | Embedded CSS/JS                                 |
 | `/api/conversations` | GET    | JSON list of channels/DMs (cached 5 min)        |
 | `/api/notifications` | GET    | Unread/mention conversations (joins `client.counts` with names) |
-| `/api/history?channel=<id>` | GET | Last ~25 messages, oldest first             |
+| `/api/history?channel=<id>[&latest=<ts>]` | GET | Last ~25 messages, oldest first (window ends at `latest` when given) |
+| `/api/search?q=<text>` | GET | Full-text message search; hits resolved to picker names |
 | `/api/replies?channel=<id>&thread=<ts>` | GET | A thread: parent + replies, oldest first |
 | `/api/mark`          | POST   | `{channel, ts}` -> `conversations.mark` (clears unread) |
 | `/api/file?u=<url>`  | GET    | Auth proxy for Slack images (Slack hosts + `image/*` only) |
@@ -85,7 +86,9 @@ Slack errors.
 optional `thread_ts` for thread replies), `conversations.mark` (clears unread
 when you view a conversation), `client.counts` (unread/mention counts — the same
 undocumented endpoint the web app uses; works because we hold a real browser
-session). Images are fetched with an authenticated GET (`FetchFile`) and proxied
+session), `search.messages` (full-text search from the search bar),
+`conversations.info` (names an unread conversation that isn't in the cached
+picker list — e.g. a group DM opened after the cache filled). Images are fetched with an authenticated GET (`FetchFile`) and proxied
 via `/api/file`, since Slack file URLs (`url_private`, thumbnails) require the
 same token+cookie and can't be loaded by the browser directly.
 
@@ -107,7 +110,11 @@ while other images use the static `thumb_720`/`thumb_360`.
 ## Frontend behavior
 
 - Page loads focused on the recipient search. Fuzzy match ranks prefix >
-  substring > subsequence; top 8 shown. `↑`/`↓` move, `Enter` selects.
+  substring > subsequence; top 8 shown. `↑`/`↓` move, `Enter` selects. The same
+  box also runs a debounced full-text **message search** (`/api/search`); hits
+  render below the name matches (reusing `renderBody`) and clicking one opens the
+  conversation anchored at that message (`&latest=<ts>`, polling stays pinned and
+  does not mark-read) or opens its thread when the hit is a reply.
 - **Notifications**: an unread/mention summary (`#notifs`) sits atop the card in
   browse mode, polled every 15s. Each row opens that conversation on click. It's
   hidden during compose to keep that view distraction-free, and restored on

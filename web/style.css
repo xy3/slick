@@ -236,6 +236,47 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 }
 .results li[aria-selected="true"] { background: var(--panel-2); }
 
+/* Message search results (full-text hits, below the name matches) */
+.msg-results { padding: 4px; max-height: 46vh; overflow-y: auto; }
+.msg-results:empty { display: none; }
+.msg-results-head {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 8px 12px 6px;
+}
+.msg-result {
+  all: unset;
+  cursor: pointer;
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 12px;
+  border-radius: 10px;
+}
+.msg-result:hover { background: var(--panel-2); }
+.msg-meta {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12px;
+  margin-bottom: 2px;
+}
+.msg-ch { color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.msg-who { color: var(--muted); }
+.msg-at { color: var(--muted); margin-left: auto; flex: none; }
+.msg-snippet {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+  max-height: 2.9em;
+  overflow: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.msg-result:hover .msg-snippet { color: var(--text); }
+
 /* Thread (recent history) */
 .thread {
   display: none;

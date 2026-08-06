@@ -30,6 +30,8 @@ Nothing leaves your machine except calls to Slack. If Slack rotates the token
 - A compact **unread/mentions** summary sits on the main page; click any row to
   jump straight into that conversation.
 - Type to fuzzy-search a channel or person; `↑`/`↓` to move, `Enter` to pick.
+  Matching **messages** (full-text) show below the name matches — click one to
+  jump into that conversation at that message (or open its thread).
 - The last ~25 messages appear and refresh every few seconds while open. Code
   blocks render monochrome, links are clickable, `*bold*`/`_italic_`/`~strike~`
   and `@`-mentions are styled (mentions of you stand out), GIFs play, and images

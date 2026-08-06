@@ -4,6 +4,7 @@
   const searchField = $("searchField");
   const search = $("search");
   const results = $("results");
+  const msgResults = $("msgResults");
   const selected = $("selected");
   const chipName = $("chipName");
   const notifs = $("notifs");
@@ -23,6 +24,7 @@
   let active = 0;      // highlighted index in `shown`
   let target = null;   // chosen conversation
   let threadTS = null; // open thread's parent ts, or null for channel view
+  let anchorTS = null; // when set, history is pinned around this message (from search)
 
   // --- data ---------------------------------------------------------------
   fetch("/api/conversations")
@@ -144,6 +146,77 @@
     [...results.children].forEach((li, i) =>
       li.setAttribute("aria-selected", i === active ? "true" : "false"));
     results.children[active]?.scrollIntoView({ block: "nearest" });
+  }
+
+  // --- message search -----------------------------------------------------
+  // The conversation picker matches names locally; this searches message *text*
+  // via Slack, debounced, and shows hits below the name matches.
+  let searchTimer = null;
+  let searchSeq = 0; // guards against out-of-order responses
+
+  function scheduleMsgSearch(q) {
+    clearTimeout(searchTimer);
+    q = q.trim();
+    searchSeq++; // invalidate any in-flight response
+    if (q.length < 2) { renderMsgResults(null); return; }
+    searchTimer = setTimeout(() => runMsgSearch(q), 300);
+  }
+
+  function runMsgSearch(q) {
+    const seq = ++searchSeq;
+    fetch("/api/search?q=" + encodeURIComponent(q))
+      .then((r) => (r.ok ? r.json() : Promise.reject(r)))
+      .then((items) => { if (seq === searchSeq && !target) renderMsgResults(items); })
+      .catch(() => { if (seq === searchSeq) renderMsgResults(null); });
+  }
+
+  function fmtDate(ts) {
+    const d = new Date(parseFloat(ts) * 1000);
+    if (isNaN(d)) return "";
+    return d.toLocaleDateString([], { month: "short", day: "numeric" });
+  }
+
+  function renderMsgResults(items) {
+    msgResults.innerHTML = "";
+    if (!items || !items.length) return;
+    const head = document.createElement("div");
+    head.className = "msg-results-head";
+    head.textContent = "Messages";
+    msgResults.appendChild(head);
+    for (const it of items) {
+      const row = document.createElement("button");
+      row.className = "msg-result";
+      row.type = "button";
+      const meta = document.createElement("div");
+      meta.className = "msg-meta";
+      const ch = document.createElement("span");
+      ch.className = "msg-ch";
+      ch.textContent = it.channelName || "";
+      const who = document.createElement("span");
+      who.className = "msg-who";
+      who.textContent = it.user || "";
+      const at = document.createElement("span");
+      at.className = "msg-at";
+      at.textContent = fmtDate(it.ts);
+      meta.append(ch, who, at);
+      const snippet = renderBody(it.segs); // reuse rich rendering (mentions, code, …)
+      snippet.classList.add("msg-snippet");
+      row.append(meta, snippet);
+      row.addEventListener("click", () => openResult(it));
+      msgResults.appendChild(row);
+    }
+  }
+
+  // Open a search hit: jump into its conversation, anchoring history at that
+  // message (or opening its thread when the hit is a reply).
+  function openResult(it) {
+    const conv = { id: it.channel, name: it.channelName, kind: it.kind };
+    if (it.thread) {
+      choose(conv);
+      openThread(it.thread);
+    } else {
+      choose(conv, it.ts);
+    }
   }
 
   // --- thread (recent history) -------------------------------------------
@@ -299,12 +372,16 @@
   const markedTs = {}; // channel id -> newest ts we've marked read
 
   function loadHistory(id, animate) {
-    fetch("/api/history?channel=" + encodeURIComponent(id))
+    let url = "/api/history?channel=" + encodeURIComponent(id);
+    if (anchorTS) url += "&latest=" + encodeURIComponent(anchorTS);
+    fetch(url)
       .then((r) => (r.ok ? r.json() : Promise.reject(r)))
       .then((msgs) => {
         if (target && target.id === id && !threadTS) {
           renderThread(msgs, false, animate);
-          markRead(id, msgs);
+          // Don't mark read when anchored on an old search hit — that would move
+          // the read cursor backward and re-flag newer messages as unread.
+          if (!anchorTS) markRead(id, msgs);
         }
       })
       .catch(() => {});
@@ -371,14 +448,18 @@
   }
 
   // --- selection flow -----------------------------------------------------
-  function choose(c) {
+  function choose(c, anchor) {
     target = c;
     threadTS = null;
+    anchorTS = anchor || null; // set when opening a search hit in context
     threadbar.style.display = "none";
     message.placeholder = "Write a message…";
     stopNotifPolling();
     notifs.innerHTML = "";
     notifSig = ""; // re-animate when the panel returns on reset
+    clearTimeout(searchTimer);
+    searchSeq++;
+    msgResults.innerHTML = "";
     chipName.textContent = c.name;
     searchField.style.display = "none";
     results.innerHTML = "";
@@ -395,6 +476,7 @@
     stopPolling();
     target = null;
     threadTS = null;
+    anchorTS = null;
     threadbar.style.display = "none";
     message.placeholder = "Write a message…";
     selected.style.display = "none";
@@ -405,6 +487,7 @@
     search.value = "";
     shown = [];
     renderResults();
+    msgResults.innerHTML = "";
     startNotifPolling();
     search.focus();
   }
@@ -416,13 +499,14 @@
     shown = filter(search.value);
     active = 0;
     renderResults();
+    scheduleMsgSearch(search.value);
   });
 
   search.addEventListener("keydown", (e) => {
     if (e.key === "ArrowDown") { e.preventDefault(); active = Math.min(active + 1, shown.length - 1); paintActive(); }
     else if (e.key === "ArrowUp") { e.preventDefault(); active = Math.max(active - 1, 0); paintActive(); }
     else if (e.key === "Enter") { e.preventDefault(); if (shown[active]) choose(shown[active]); }
-    else if (e.key === "Escape") { search.value = ""; shown = []; renderResults(); }
+    else if (e.key === "Escape") { search.value = ""; shown = []; renderResults(); scheduleMsgSearch(""); }
   });
 
   // --- compose interactions ----------------------------------------------

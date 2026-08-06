@@ -26,6 +26,9 @@ type Client struct {
 
 	usersMu    sync.RWMutex
 	usersCache map[string]user // id -> user, loaded lazily
+
+	infoMu    sync.RWMutex
+	infoCache map[string]Conversation // id -> resolved name/kind, loaded lazily
 }
 
 func New(token, cookie string) *Client {
@@ -175,26 +178,14 @@ func (c *Client) Conversations() ([]Conversation, error) {
 			if ch.IsArchived {
 				continue
 			}
-			conv := Conversation{ID: ch.ID}
-			switch {
-			case ch.IsIM:
-				u, ok := users[ch.User]
-				if !ok || u.Deleted {
+			// Skip DMs with a departed/unknown user — they'd be nameless clutter
+			// in the picker (the notifications path resolves such IDs separately).
+			if ch.IsIM {
+				if u, ok := users[ch.User]; !ok || u.Deleted {
 					continue
 				}
-				conv.Name = "@" + u.label()
-				conv.Kind = "dm"
-			case ch.IsMPIM:
-				conv.Name = "@" + strings.TrimPrefix(ch.Name, "mpdm-")
-				conv.Kind = "group"
-			case ch.IsPrivate:
-				conv.Name = "#" + ch.Name
-				conv.Kind = "private"
-			default:
-				conv.Name = "#" + ch.Name
-				conv.Kind = "channel"
 			}
-			out = append(out, conv)
+			out = append(out, c.convFromRaw(ch, users))
 		}
 
 		cursor = r.Meta.NextCursor
@@ -205,6 +196,71 @@ func (c *Client) Conversations() ([]Conversation, error) {
 
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+// convFromRaw builds a normalized, human-named Conversation from a raw channel.
+// Unlike the picker loop it never skips, so it can also name a conversation the
+// picker list doesn't carry (e.g. a group DM behind an unread notification).
+func (c *Client) convFromRaw(ch rawConversation, users map[string]user) Conversation {
+	conv := Conversation{ID: ch.ID}
+	switch {
+	case ch.IsIM:
+		if u, ok := users[ch.User]; ok {
+			conv.Name = "@" + u.label()
+		} else {
+			conv.Name = "@someone"
+		}
+		conv.Kind = "dm"
+	case ch.IsMPIM:
+		// Slack names group DMs "mpdm-alice--bob--carol-1"; unpack to "@alice, bob, carol".
+		name := strings.TrimSuffix(strings.TrimPrefix(ch.Name, "mpdm-"), "-1")
+		conv.Name = "@" + strings.Join(strings.Split(name, "--"), ", ")
+		conv.Kind = "group"
+	case ch.IsPrivate:
+		conv.Name = "#" + ch.Name
+		conv.Kind = "private"
+	default:
+		conv.Name = "#" + ch.Name
+		conv.Kind = "channel"
+	}
+	return conv
+}
+
+// ConvInfo resolves one conversation's readable name/kind by ID, caching the
+// result. Used for unread counts whose channel isn't in the picker list.
+func (c *Client) ConvInfo(id string) (Conversation, error) {
+	c.infoMu.RLock()
+	cached, ok := c.infoCache[id]
+	c.infoMu.RUnlock()
+	if ok {
+		return cached, nil
+	}
+
+	users, err := c.ensureUsers()
+	if err != nil {
+		return Conversation{}, err
+	}
+	form := url.Values{}
+	form.Set("channel", id)
+	var r struct {
+		baseResp
+		Channel rawConversation `json:"channel"`
+	}
+	if err := c.call("conversations.info", form, &r); err != nil {
+		return Conversation{}, err
+	}
+	if err := r.err("conversations.info"); err != nil {
+		return Conversation{}, err
+	}
+	conv := c.convFromRaw(r.Channel, users)
+
+	c.infoMu.Lock()
+	if c.infoCache == nil {
+		c.infoCache = map[string]Conversation{}
+	}
+	c.infoCache[id] = conv
+	c.infoMu.Unlock()
+	return conv, nil
 }
 
 // ensureUsers loads the workspace directory once and caches it, so both the
@@ -303,7 +359,9 @@ type rawFile struct {
 }
 
 // History returns up to limit recent messages, oldest first, ready to display.
-func (c *Client) History(channelID string, limit int, me string) ([]Message, error) {
+// If latest is non-empty, the window ends at (and includes) that timestamp
+// instead of the newest message — used to open a searched message in context.
+func (c *Client) History(channelID string, limit int, me, latest string) ([]Message, error) {
 	users, err := c.ensureUsers()
 	if err != nil {
 		return nil, err
@@ -312,6 +370,10 @@ func (c *Client) History(channelID string, limit int, me string) ([]Message, err
 	form := url.Values{}
 	form.Set("channel", channelID)
 	form.Set("limit", strconv.Itoa(limit))
+	if latest != "" {
+		form.Set("latest", latest)
+		form.Set("inclusive", "true")
+	}
 	var r struct {
 		baseResp
 		Messages []rawMessage `json:"messages"`
@@ -594,6 +656,81 @@ func appendText(segs []Segment, t string) []Segment {
 		return segs
 	}
 	return append(segs, Segment{Type: "text", Text: t})
+}
+
+// SearchResult is one message match from a full-text search, rendered into safe
+// segments and carrying enough to open it in place.
+type SearchResult struct {
+	Channel     string    `json:"channel"`          // conversation ID to open
+	ChannelName string    `json:"channelName"`      // readable name (main.go resolves it)
+	Kind        string    `json:"kind"`             // channel | private | group | dm
+	User        string    `json:"user"`             // author display name
+	Segs        []Segment `json:"segs"`             // rendered snippet
+	TS          string    `json:"ts"`               // message timestamp
+	Thread      string    `json:"thread,omitempty"` // parent ts, if it's a thread reply
+}
+
+type rawMatch struct {
+	Type     string `json:"type"`
+	User     string `json:"user"`
+	Username string `json:"username"`
+	Text     string `json:"text"`
+	TS       string `json:"ts"`
+	ThreadTS string `json:"thread_ts"`
+	Channel  struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	} `json:"channel"`
+}
+
+// Search runs a full-text message search (the same search.messages endpoint the
+// web app uses), newest first, and renders each match into display segments.
+func (c *Client) Search(query string, limit int, me string) ([]SearchResult, error) {
+	users, err := c.ensureUsers()
+	if err != nil {
+		return nil, err
+	}
+
+	form := url.Values{}
+	form.Set("query", query)
+	form.Set("count", strconv.Itoa(limit))
+	form.Set("sort", "timestamp")
+	form.Set("sort_dir", "desc")
+	var r struct {
+		baseResp
+		Messages struct {
+			Matches []rawMatch `json:"matches"`
+		} `json:"messages"`
+	}
+	if err := c.call("search.messages", form, &r); err != nil {
+		return nil, err
+	}
+	if err := r.err("search.messages"); err != nil {
+		return nil, err
+	}
+
+	out := make([]SearchResult, 0, len(r.Messages.Matches))
+	for _, m := range r.Messages.Matches {
+		name := c.name(users, m.User)
+		if name == "" {
+			name = m.Username
+		}
+		if name == "" {
+			name = "unknown"
+		}
+		res := SearchResult{
+			Channel:     m.Channel.ID,
+			ChannelName: m.Channel.Name,
+			User:        name,
+			Segs:        c.renderSegments(m.Text, users, me),
+			TS:          m.TS,
+		}
+		if m.ThreadTS != "" && m.ThreadTS != m.TS {
+			res.Thread = m.ThreadTS
+		}
+		out = append(out, res)
+	}
+	return out, nil
 }
 
 // Count is an unread signal for one conversation.

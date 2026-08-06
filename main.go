@@ -105,6 +105,7 @@ func main() {
 	mux.HandleFunc("/api/conversations", s.handleConversations)
 	mux.HandleFunc("/api/notifications", s.handleNotifications)
 	mux.HandleFunc("/api/history", s.handleHistory)
+	mux.HandleFunc("/api/search", s.handleSearch)
 	mux.HandleFunc("/api/replies", s.handleReplies)
 	mux.HandleFunc("/api/mark", s.handleMark)
 	mux.HandleFunc("/api/file", s.handleFile)
@@ -237,7 +238,14 @@ func (s *server) handleNotifications(w http.ResponseWriter, r *http.Request) {
 	for _, c := range counts {
 		conv, ok := byID[c.ID]
 		if !ok {
-			continue // muted/archived or not a target we can open
+			// Not in the cached picker list (e.g. a group DM opened after the
+			// cache filled, or one conversations.list didn't return). Resolve it
+			// directly so the unread still surfaces instead of vanishing.
+			resolved, err := client.ConvInfo(c.ID)
+			if err != nil {
+				continue
+			}
+			conv = resolved
 		}
 		items = append(items, notification{
 			ID:       c.ID,
@@ -273,12 +281,56 @@ func (s *server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "channel required", http.StatusBadRequest)
 		return
 	}
-	msgs, err := client.History(channel, 25, me)
+	msgs, err := client.History(channel, 25, me, r.URL.Query().Get("latest"))
 	if err != nil {
 		http.Error(w, friendly(err), http.StatusBadGateway)
 		return
 	}
 	writeJSON(w, msgs)
+}
+
+// handleSearch runs a full-text message search and resolves each hit's channel
+// to the same readable name/kind the picker uses, so results open in place.
+func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
+	client, convs, err := s.conversations()
+	if client == nil {
+		http.Error(w, "not configured", http.StatusUnauthorized)
+		return
+	}
+	if err != nil {
+		http.Error(w, friendly(err), http.StatusBadGateway)
+		return
+	}
+	q := trim(r.URL.Query().Get("q"))
+	if q == "" {
+		writeJSON(w, []slack.SearchResult{})
+		return
+	}
+	s.mu.RLock()
+	me := s.me
+	s.mu.RUnlock()
+
+	results, err := client.Search(q, 15, me)
+	if err != nil {
+		http.Error(w, friendly(err), http.StatusBadGateway)
+		return
+	}
+
+	byID := make(map[string]slack.Conversation, len(convs))
+	for _, c := range convs {
+		byID[c.ID] = c
+	}
+	for i := range results {
+		if conv, ok := byID[results[i].Channel]; ok {
+			results[i].ChannelName = conv.Name
+			results[i].Kind = conv.Kind
+		} else if results[i].ChannelName != "" {
+			results[i].ChannelName = "#" + results[i].ChannelName
+		} else {
+			results[i].ChannelName = "conversation"
+		}
+	}
+	writeJSON(w, results)
 }
 
 func (s *server) handleReplies(w http.ResponseWriter, r *http.Request) {

@@ -112,9 +112,14 @@ while other images use the static `thumb_720`/`thumb_360`.
 - Page loads focused on the recipient search. Fuzzy match ranks prefix >
   substring > subsequence; top 8 shown. `↑`/`↓` move, `Enter` selects. The same
   box also runs a debounced full-text **message search** (`/api/search`); hits
-  render below the name matches (reusing `renderBody`) and clicking one opens the
-  conversation anchored at that message (`&latest=<ts>`, polling stays pinned and
-  does not mark-read) or opens its thread when the hit is a reply.
+  render below the name matches (reusing `renderBody`) and clicking one jumps to
+  that message: a **root** message anchors channel history at it
+  (`&latest=<ts>`, polling stays pinned and does not mark-read), while a
+  **reply** opens its thread. Either way the message is highlighted and centered
+  (`hitTS`). Replies are detected from the match's `thread_ts` *or* its permalink
+  (`search.messages` doesn't always fill `thread_ts`), since `conversations.history`
+  never returns thread replies — anchoring one would load the channel with the
+  message missing.
 - **Notifications**: an unread/mention summary (`#notifs`) sits atop the card in
   browse mode, polled every 15s. Each row opens that conversation on click. It's
   hidden during compose to keep that view distraction-free, and restored on

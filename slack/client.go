@@ -672,12 +672,13 @@ type SearchResult struct {
 
 type rawMatch struct {
 	Type     string `json:"type"`
-	User     string `json:"user"`
-	Username string `json:"username"`
-	Text     string `json:"text"`
-	TS       string `json:"ts"`
-	ThreadTS string `json:"thread_ts"`
-	Channel  struct {
+	User      string `json:"user"`
+	Username  string `json:"username"`
+	Text      string `json:"text"`
+	TS        string `json:"ts"`
+	ThreadTS  string `json:"thread_ts"`
+	Permalink string `json:"permalink"`
+	Channel   struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`
 	} `json:"channel"`
@@ -725,8 +726,17 @@ func (c *Client) Search(query string, limit int, me string) ([]SearchResult, err
 			Segs:        c.renderSegments(m.Text, users, me),
 			TS:          m.TS,
 		}
-		if m.ThreadTS != "" && m.ThreadTS != m.TS {
-			res.Thread = m.ThreadTS
+		// A thread reply must be opened via its parent, not anchored in channel
+		// history (which only holds top-level messages). search.messages doesn't
+		// reliably fill thread_ts, but the permalink carries it — fall back to that.
+		thread := m.ThreadTS
+		if thread == "" && m.Permalink != "" {
+			if u, err := url.Parse(m.Permalink); err == nil {
+				thread = u.Query().Get("thread_ts")
+			}
+		}
+		if thread != "" && thread != m.TS {
+			res.Thread = thread
 		}
 		out = append(out, res)
 	}

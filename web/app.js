@@ -24,7 +24,8 @@
   let active = 0;      // highlighted index in `shown`
   let target = null;   // chosen conversation
   let threadTS = null; // open thread's parent ts, or null for channel view
-  let anchorTS = null; // when set, history is pinned around this message (from search)
+  let anchorTS = null; // when set, channel history is pinned to end at this message
+  let hitTS = null;    // a searched message to highlight + center (history or thread)
 
   // --- data ---------------------------------------------------------------
   fetch("/api/conversations")
@@ -212,7 +213,10 @@
   function openResult(it) {
     const conv = { id: it.channel, name: it.channelName, kind: it.kind };
     if (it.thread) {
+      // A reply lives in a thread, not in channel history — open the thread and
+      // highlight the reply inside it. (choose clears hitTS, so set it after.)
       choose(conv);
+      hitTS = it.ts;
       openThread(it.thread);
     } else {
       choose(conv, it.ts);
@@ -253,7 +257,7 @@
     for (const m of msgs) {
       const li = document.createElement("li");
       if (m.mine) li.className = "mine";
-      if (anchorTS && m.ts === anchorTS) { li.classList.add("hit"); hitEl = li; }
+      if (hitTS && m.ts === hitTS) { li.classList.add("hit"); hitEl = li; }
       const who = document.createElement("div");
       who.className = "who";
       const name = document.createElement("span");
@@ -274,7 +278,7 @@
       }
       thread.appendChild(li);
     }
-    if (anchorTS) {
+    if (hitTS) {
       // Center the searched message on the initial (animated) render; leave the
       // scroll alone on polls so the reader isn't yanked around.
       if (animate && hitEl) {
@@ -428,6 +432,7 @@
 
   function closeThread() {
     threadTS = null;
+    hitTS = null; // the highlighted reply lives in the thread, not channel history
     threadbar.style.display = "none";
     thread.innerHTML = "";
     message.placeholder = "Write a message…";
@@ -464,6 +469,7 @@
     target = c;
     threadTS = null;
     anchorTS = anchor || null; // set when opening a search hit in context
+    hitTS = anchor || null;    // same message gets highlighted; cleared for normal picks
     threadbar.style.display = "none";
     message.placeholder = "Write a message…";
     stopNotifPolling();
@@ -489,6 +495,7 @@
     target = null;
     threadTS = null;
     anchorTS = null;
+    hitTS = null;
     threadbar.style.display = "none";
     message.placeholder = "Write a message…";
     selected.style.display = "none";

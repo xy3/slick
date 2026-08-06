@@ -249,9 +249,11 @@
       thread.appendChild(li);
       return;
     }
+    let hitEl = null; // the searched message, when anchored, to scroll into view
     for (const m of msgs) {
       const li = document.createElement("li");
       if (m.mine) li.className = "mine";
+      if (anchorTS && m.ts === anchorTS) { li.classList.add("hit"); hitEl = li; }
       const who = document.createElement("div");
       who.className = "who";
       const name = document.createElement("span");
@@ -272,7 +274,17 @@
       }
       thread.appendChild(li);
     }
-    if (atBottom) thread.scrollTop = thread.scrollHeight;
+    if (anchorTS) {
+      // Center the searched message on the initial (animated) render; leave the
+      // scroll alone on polls so the reader isn't yanked around.
+      if (animate && hitEl) {
+        const cr = thread.getBoundingClientRect();
+        const hr = hitEl.getBoundingClientRect();
+        thread.scrollTop += (hr.top - cr.top) - (thread.clientHeight - hitEl.clientHeight) / 2;
+      }
+    } else if (atBottom) {
+      thread.scrollTop = thread.scrollHeight;
+    }
   }
 
   // /api/file proxies authenticated Slack file URLs so the browser can load them.

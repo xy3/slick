@@ -345,6 +345,12 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
   color: var(--text);
 }
 .thread li.mine .who { color: var(--text); }
+/* The message you jumped to from search: a lingering marker plus a brief flash. */
+@keyframes hitFlash { 0%, 12% { background: var(--ring); } 100% { background: transparent; } }
+.thread li.hit {
+  box-shadow: inset 2px 0 0 var(--text);
+  animation: hitFlash 1.5s ease-out both;
+}
 .thread .empty { color: var(--muted); text-align: center; padding: 18px; font-size: 13px; }
 
 /* Images — always on their own line, even without a preceding newline */
